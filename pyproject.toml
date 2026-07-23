@@ -1,0 +1,36 @@
+[project]
+name = "vidtranssub"
+version = "0.1.0"
+description = "只產生外掛字幕:固定秒數取樣畫面文字,PaddleOCR-VL 辨識 + 外部 LLM cache API 翻譯,輸出 SRT/ASS"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# PaddleOCR-VL 是 v1 的必要 OCR 元件,但依 CPU/GPU 硬體選擇安裝,故放 extra。
+ocr = [
+    "paddlepaddle",
+    "paddleocr>=3.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+vidtranssub = "vidtranssub.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["vidtranssub"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

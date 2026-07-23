@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# VideoTransSub 工作目錄與快取
+work/
+*.srt
+*.ass
+
+# 測試產物
+tests/_artifacts/
+testdata/*.mp4
+testdata/src_frames/
+
+# 參考用的舊專案,不納入版控
+VidTransFlow/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
