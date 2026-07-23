@@ -109,14 +109,26 @@ class PaddleOCRProvider:
 
     @staticmethod
     def _result_to_json(result) -> dict:
-        """PaddleOCR 結果物件轉 dict(不同版本 API 略有差異)。"""
+        """PaddleOCR 結果物件轉 dict(不同版本 API 略有差異)。
+
+        PaddleOCR-VL 的 .json 會把內容包在 {"res": {...}} 之下,此處一併解包,
+        讓 parsing_res_list / width / height 等欄位回到頂層(對齊規格 §4 結果轉換表)。
+        """
+        raw: dict | None = None
         for attr in ("json", "res"):
             val = getattr(result, attr, None)
             if isinstance(val, dict):
-                return val
-        if isinstance(result, dict):
-            return result
-        return {}
+                raw = val
+                break
+        if raw is None and isinstance(result, dict):
+            raw = result
+        if raw is None:
+            return {}
+        # 解包 {"res": {...}} 外層封裝
+        inner = raw.get("res")
+        if isinstance(inner, dict) and "parsing_res_list" in inner:
+            return inner
+        return raw
 
     def recognize(self, images: list[Path]) -> list[OCRResult]:
         """對整批圖片辨識;一批失敗先重試,再拆成單張標記失敗 sample。"""

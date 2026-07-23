@@ -12,6 +12,9 @@ dependencies = [
 ocr = [
     "paddlepaddle",
     "paddleocr>=3.0",
+    # PaddleOCR-VL 底層走 PaddleX pipeline,需要 doc-parser 相依
+    # (transformers/tokenizers/sentencepiece/einops/tiktoken 等),否則初始化會拋 DependencyError。
+    "paddlex[ocr]>=3.0",
 ]
 dev = [
     "pytest>=8.0",

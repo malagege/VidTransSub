@@ -24,7 +24,7 @@ VidTransFlow 是把「翻譯後文字嵌回畫面並重編碼影片」,VideoTran
 
 - Python 3.11+
 - `ffmpeg` / `ffprobe` 在 PATH 上
-- PaddleOCR-VL(依 CPU/GPU 硬體安裝):`pip install "vidtranssub[ocr]"`
+- PaddleOCR-VL:CPU 版用 `pip install "vidtranssub[ocr]"`;**GPU 版另有裝法**,見下方〈[用 NVIDIA 顯卡加速](#用-nvidia-顯卡加速windows)〉
 - 一個 OpenAI-compatible 的 LLM cache API(預設 `http://127.0.0.1:8790`)
 
 ```bash
@@ -55,6 +55,66 @@ vidtranssub input.mp4 --stage ocr
 產出(在輸入檔同目錄):`input.zh-TW.srt` 與 `input.zh-TW.ass`(UTF-8,不加 BOM)。
 
 任何時刻 Ctrl+C 中斷後,重跑相同指令即從斷點續跑。
+
+## 新手快速上手(含 GPU 安裝與疑難排解)
+
+### 用 NVIDIA 顯卡加速(Windows)
+
+`nvidia-smi` 右上角的 `CUDA Version` 是**驅動支援的最高版本**,而 NVIDIA 驅動向下相容,
+所以裝「不高於」它的 CUDA 版 paddle 即可。Windows 上 PaddlePaddle GPU 版目前最高只提供到
+**CUDA 12.9(cu129)**;CUDA 13.x(cu130/cu132)只有 Linux 版。因此 Windows(即使驅動是
+CUDA 13.x)一律裝 cu129,驅動會相容。
+
+> ⚠️ GPU 版**不要**用 `pip install -e ".[ocr]"`(那個 extra 會裝 CPU 版 paddle)。
+> 請改成下面兩步,且**不要**同時裝 CPU 版,以免衝突:
+
+```powershell
+# 1) 裝 GPU 版 paddle(Windows 最高 cu129;CUDA 13.x 驅動可相容)
+uv pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
+
+# 2) 裝 PaddleOCR 與 PaddleOCR-VL 需要的相依(不經 .[ocr] extra,避免又拉進 CPU 版 paddle)
+#    paddlex[ocr] 提供 doc-parser 相依,少了它初始化會報 DependencyError;它不會拉進 paddlepaddle。
+uv pip install "paddleocr>=3.0" "paddlex[ocr]>=3.0"
+```
+
+驗證有吃到 GPU:
+
+```powershell
+uv run python -c "import paddle; print(paddle.device.is_compiled_with_cuda(), paddle.device.cuda.device_count())"
+```
+
+印出 `True 1`(或更多張)就對了。執行主程式時預設 `--ocr-device auto` 會自動選 GPU,
+也可明確指定 `--ocr-device gpu:0`。
+
+> 高效能服務化後端(vLLM / SGLang / FastDeploy)僅支援 **Linux**;Windows 走的是 PaddlePaddle
+> 內建 GPU 推理(一樣有 GPU 加速,只是非最快的服務化堆疊)。要極致吞吐,建議在 Linux 或 WSL2
+> 用 cu129/cu132 + FastDeploy。
+
+### 實際跑一支影片(兩個終端機)
+
+翻譯需要一個 OpenAI-compatible 的 LLM cache API 在背景執行。想先看整條流程跑通、還不接真翻譯時,
+可用內建的**假翻譯伺服器**(譯文會是「[譯] 原文」):
+
+```powershell
+# 終端機 A:啟動假翻譯伺服器,保持開著
+uv run python tests/mock_llm.py --port 8790
+
+# 終端機 B:產生測試影片並執行(產出 test.zh-TW.srt / test.zh-TW.ass)
+uv run python testdata/make_test_video.py test.mp4
+uv run vidtranssub test.mp4 --target-lang zh-TW
+```
+
+要接真翻譯時,把假伺服器換成你自己的 API,並在指令加上 `--llm-cache-url http://你的網址:埠`。
+
+### 常見卡關
+
+| 症狀 | 原因 / 解法 |
+|---|---|
+| `LLM cache API 連線失敗` | 翻譯伺服器沒開;確認終端機 A 的 mock_llm(或你的 API)還在跑,或 `--llm-cache-url` 是否正確。 |
+| 裝 GPU 版後仍跑 CPU | 可能同時裝了 CPU 版 paddle;先 `uv pip uninstall paddlepaddle`,再重裝 `paddlepaddle-gpu`。用上面的驗證指令確認為 `True`。 |
+| `ffmpeg not found` | `ffmpeg` / `ffprobe` 需在 PATH 上(本機已確認具備)。 |
+| 中途中斷了 | 直接重跑**同一行**指令即可從斷點續跑,不會重來。 |
+| 想清空重跑 | 刪掉 `work/` 資料夾(暫存與跨影片 OCR cache)即可。 |
 
 ## 處理階段
 
