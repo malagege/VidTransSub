@@ -31,6 +31,7 @@ VidTransFlow 是把「翻譯後文字嵌回畫面並重編碼影片」,VideoTran
 uv venv --python 3.12
 uv pip install -e ".[dev]"      # 開發/測試
 uv pip install -e ".[ocr]"      # 實際辨識需要的 PaddleOCR-VL
+uv pip install -e ".[server]"   # 內建翻譯快取 proxy(接 Ollama/llama.cpp 等,選用)
 ```
 
 ## 快速開始
@@ -104,7 +105,30 @@ uv run python testdata/make_test_video.py test.mp4
 uv run vidtranssub test.mp4 --target-lang zh-TW
 ```
 
-要接真翻譯時,把假伺服器換成你自己的 API,並在指令加上 `--llm-cache-url http://你的網址:埠`。
+要接真翻譯時,改用下面的內建 proxy(或你自己的 OpenAI-compatible 端點)。
+
+### 用真翻譯:內建 LLM cache proxy(接 Ollama / llama.cpp)
+
+`mock_llm.py` 只是假翻譯。要真翻譯,本專案內建一個 **OpenAI-compatible 的翻譯快取 proxy**
+([vidtranssub/llm_cache_server.py](vidtranssub/llm_cache_server.py)):把每個唯一字幕的翻譯
+快取到 SQLite(跨影片重複字幕不再重打 LLM),cache miss 時轉發到你指定的上游;
+命中回傳 `x-vtf-cache: hit`、統計走 `/vtf/stats`,完全對齊 client 介面。
+
+先安裝 server 相依:`uv pip install -e ".[server]"`。以 **Ollama** 為例(先 `ollama pull qwen2.5`):
+
+```powershell
+# 終端機 A:啟動翻譯 proxy(預設埠 8790,對齊 client 預設)
+uv run vidtranssub-llm-cache --upstream-url http://127.0.0.1:11434 --default-model qwen2.5
+
+# 終端機 B:跑影片。proxy 在預設 8790,故不必加 --llm-cache-url;
+#           以 --llm-model 指定模型,避免自動抓到 /v1/models 清單的第一個
+uv run vidtranssub 你的影片.mp4 --target-lang zh-TW --llm-model qwen2.5
+```
+
+- **llama.cpp server**:把 `--upstream-url` 換成 `http://127.0.0.1:8080` 即可。
+- **需要金鑰的上游**(商用 OpenAI-compatible 端點):把金鑰放進環境變數(預設讀 `LLM_API_KEY`,
+  可用 `--api-key-env` 改名),proxy 會以 `Authorization: Bearer` 轉發;client → proxy 之間不需金鑰。
+- proxy 選項:`--host` / `--port` / `--db`(SQLite 快取檔)/ `--api-key-env` / `--default-model`。
 
 ### 常見卡關
 

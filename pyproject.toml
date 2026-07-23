@@ -16,6 +16,11 @@ ocr = [
     # (transformers/tokenizers/sentencepiece/einops/tiktoken 等),否則初始化會拋 DependencyError。
     "paddlex[ocr]>=3.0",
 ]
+# 真・翻譯快取 proxy(llm_cache_server)所需;client-only 使用者不必安裝。
+server = [
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -26,6 +31,7 @@ dev = [
 
 [project.scripts]
 vidtranssub = "vidtranssub.__main__:main"
+vidtranssub-llm-cache = "vidtranssub.llm_cache_server:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -2889,10 +2889,15 @@ ocr = [
     { name = "paddlepaddle" },
     { name = "paddlex", extra = ["ocr"] },
 ]
+server = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.111" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.111" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "paddleocr", marker = "extra == 'ocr'", specifier = ">=3.0" },
     { name = "paddlepaddle", marker = "extra == 'ocr'" },
@@ -2901,8 +2906,9 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "uvicorn", marker = "extra == 'dev'", specifier = ">=0.30" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30" },
 ]
-provides-extras = ["ocr", "dev"]
+provides-extras = ["ocr", "server", "dev"]
 
 [[package]]
 name = "wcwidth"
