@@ -152,6 +152,24 @@ def test_resume_skips_completed_stages(tmp_path, test_video, llm_url):
     assert (test_video.parent / "clip.zh-TW.srt").exists()
 
 
+def test_two_phase_split_avoids_ocr_provider(tmp_path, test_video, llm_url):
+    """--to-stage ocr 後 --from-stage track:第二段不得載入 OCR provider(VRAM 分離)。"""
+    cfg = _cfg(tmp_path, llm_url)
+
+    # 第一段:只跑到 ocr(用假 provider)。
+    run_pipeline(cfg, test_video, provider=FakeOCRProvider(scene_blocks), to_stage="ocr")
+    assert not (test_video.parent / "clip.zh-TW.srt").exists()  # 尚未 emit
+    work = Path(cfg.work_dir).resolve() / "clip-videosub"
+    assert (work / "ocr").exists() and any((work / "ocr").glob("*.json"))
+    assert not (work / "tracks.json").exists()
+
+    # 第二段:從 track 開始,provider=None。
+    # 若誤入 ocr 階段,會嘗試 build_provider() 載入 PaddleOCR 而拋錯;能完成即證明沒碰 OCR。
+    run_pipeline(cfg, test_video, provider=None, from_stage="track")
+    assert (test_video.parent / "clip.zh-TW.srt").exists()
+    assert (test_video.parent / "clip.zh-TW.ass").exists()
+
+
 def test_translate_unique_cues(tmp_path, test_video, llm_url):
     cfg = _cfg(tmp_path, llm_url)
     stats = run_pipeline(cfg, test_video, provider=FakeOCRProvider(scene_blocks))

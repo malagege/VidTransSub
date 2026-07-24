@@ -45,11 +45,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ASS 固定位置(SRT 位置由播放器決定)")
     p.add_argument("--no-ocr-cache", action="store_true", help="停用完全相同圖片的 OCR cache")
     p.add_argument("--strict", action="store_true", help="任一樣本或翻譯失敗即中止")
+    stage_choices = ["probe", "sample", "cache", "ocr", "track", "translate", "cleanup", "emit"]
     p.add_argument(
-        "--stage",
-        choices=["probe", "sample", "cache", "ocr", "track", "translate", "cleanup", "emit"],
-        default=None,
-        help="只重跑指定階段(cache 等同 ocr)",
+        "--stage", choices=stage_choices, default=None,
+        help="只重跑指定的單一階段(cache 等同 ocr);與 --from-stage/--to-stage 互斥",
+    )
+    p.add_argument(
+        "--from-stage", choices=stage_choices, default=None,
+        help="從指定階段跑到最後(可與 --to-stage 合用成區間)",
+    )
+    p.add_argument(
+        "--to-stage", choices=stage_choices, default=None,
+        help="從頭跑到指定階段(可與 --from-stage 合用成區間)",
     )
     return p
 
@@ -82,7 +89,11 @@ def config_from_args(args: argparse.Namespace) -> Config:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.stage is not None and (args.from_stage is not None or args.to_stage is not None):
+        parser.error("--stage 不可與 --from-stage/--to-stage 併用")
+
     from .pipeline import PipelineError, run_pipeline
     from .ffmpeg import FFmpegError
     from .llm_cache_client import TranslationError
@@ -90,7 +101,12 @@ def main() -> None:
 
     cfg = config_from_args(args)
     try:
-        run_pipeline(cfg, args.input, only_stage=args.stage)
+        run_pipeline(
+            cfg, args.input,
+            only_stage=args.stage,
+            from_stage=args.from_stage,
+            to_stage=args.to_stage,
+        )
     except KeyboardInterrupt:
         print("\n已中斷;重跑相同指令即可從斷點續跑。", file=sys.stderr)
         sys.exit(130)

@@ -15,16 +15,46 @@ from . import ffmpeg, subtitle
 from .cleanup import finalize_cues
 from .config import Config, stable_hash
 from .llm_cache_client import LLMCacheClient, TranslationError, resolve_model
-from .manifest import Manifest
+from .manifest import STAGES, Manifest
 from .ocr_cache import OCRCache, ocr_cache_key, sha256_bytes
 from .ocr_provider import OCRProvider, OCRResult
 from .tracking import canonical_key, compose_cues, track_events
 
 PROBE_HASH = stable_hash({"stage": "probe", "v": 1})
 
+STAGE_INDEX = {name: i for i, name in enumerate(STAGES)}
+STAGE_ALIAS = {"cache": "ocr"}  # cache 是 ocr 階段的一部分
+
 
 class PipelineError(RuntimeError):
     pass
+
+
+def stage_bounds(
+    only_stage: str | None = None,
+    from_stage: str | None = None,
+    to_stage: str | None = None,
+) -> tuple[int, int]:
+    """把階段選項換算成要執行的 [from_idx, to_idx] 區間(含端點)。
+
+    - only_stage:只跑單一階段(from=to)。
+    - from_stage/to_stage:跑一段連續區間;省略者分別取頭/尾。
+    - cache 視為 ocr。
+    """
+    def norm(s: str | None) -> str | None:
+        return STAGE_ALIAS.get(s, s) if s else s
+
+    only_stage, from_stage, to_stage = norm(only_stage), norm(from_stage), norm(to_stage)
+    if only_stage is not None:
+        i = STAGE_INDEX[only_stage]
+        return i, i
+    lo = STAGE_INDEX[from_stage] if from_stage else 0
+    hi = STAGE_INDEX[to_stage] if to_stage else len(STAGES) - 1
+    if lo > hi:
+        raise PipelineError(
+            f"--from-stage({from_stage})不可晚於 --to-stage({to_stage})"
+        )
+    return lo, hi
 
 
 def build_provider(cfg: Config) -> OCRProvider:
@@ -57,6 +87,8 @@ def run_pipeline(
     input_path: str | Path,
     provider: OCRProvider | None = None,
     only_stage: str | None = None,
+    from_stage: str | None = None,
+    to_stage: str | None = None,
     log=print,
 ) -> dict:
     ffmpeg.check_tools()
@@ -86,12 +118,10 @@ def run_pipeline(
     def save_stats() -> None:
         _atomic_write_json(stats_path, stats)
 
-    # cache 是 ocr 階段的一部分;--stage cache 等同 --stage ocr。
-    stage_alias = {"cache": "ocr"}
-    resolved_only = stage_alias.get(only_stage, only_stage)
+    lo_idx, hi_idx = stage_bounds(only_stage, from_stage, to_stage)
 
     def wanted(stage: str) -> bool:
-        return resolved_only is None or resolved_only == stage
+        return lo_idx <= STAGE_INDEX[stage] <= hi_idx
 
     # ---- Stage 1: probe ----
     if wanted("probe") and not manifest.check_stage("probe", PROBE_HASH):
@@ -149,14 +179,19 @@ def run_pipeline(
     elif wanted("sample"):
         log("[sample] 已完成,跳過")
 
-    samples_json = work / "samples.json"
-    if not samples_json.exists():
-        if resolved_only in (None, "sample"):
-            raise PipelineError("samples.json 不存在,請先執行 sample 階段")
-        raise PipelineError(f"缺少 samples.json,無法執行 --stage {only_stage}")
-    samples = json.loads(samples_json.read_text(encoding="utf-8"))["samples"]
-    stats["sample_count"] = len(samples)
-    save_stats()
+    # 只有 sample 及其下游階段需要 samples.json。
+    samples: list[dict] = []
+    if hi_idx >= STAGE_INDEX["sample"]:
+        samples_json = work / "samples.json"
+        if not samples_json.exists():
+            if wanted("sample"):
+                raise PipelineError("samples.json 不存在,請先執行 sample 階段")
+            raise PipelineError(
+                "缺少 samples.json,無法執行選定的階段區間(請先跑到 sample 階段)"
+            )
+        samples = json.loads(samples_json.read_text(encoding="utf-8"))["samples"]
+        stats["sample_count"] = len(samples)
+        save_stats()
 
     # ---- Stage 3+4: ocr(含 exact-image cache)----
     if wanted("ocr"):

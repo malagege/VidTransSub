@@ -57,6 +57,23 @@ vidtranssub input.mp4 --stage ocr
 
 任何時刻 Ctrl+C 中斷後,重跑相同指令即從斷點續跑。
 
+### 讓 OCR 與翻譯分開吃 VRAM
+
+PaddleOCR-VL 與 llama.cpp 這類 LLM 上游若共用同一張顯卡,同時常駐會互相搶 VRAM。
+由於本工具階段循序、且中間結果落地可續跑,可用 `--to-stage` / `--from-stage` 把流程切成兩段,
+**每段只載入一個模型**:
+
+```bash
+# 第一段:llama.cpp 關著,只有 PaddleOCR 吃 VRAM
+vidtranssub input.mp4 --to-stage ocr
+
+# 開 llama.cpp 後,第二段:ocr 不在區間 -> 完全不載入 PaddleOCR,VRAM 全留給 llama.cpp
+vidtranssub input.mp4 --from-stage track --target-lang zh-TW
+```
+
+`--stage X` 仍表示只跑單一階段;`--from-stage`/`--to-stage` 表示跑一段連續區間(可省略其一取頭/尾),
+兩者互斥。
+
 ## 新手快速上手(含 GPU 安裝與疑難排解)
 
 ### 用 NVIDIA 顯卡加速(Windows)
@@ -174,7 +191,9 @@ probe → sample → ocr(含 exact-image cache)→ track → translate → clean
 | `--subtitle-position` | `bottom` | ASS 固定位置:`bottom/top` |
 | `--no-ocr-cache` | false | 停用完全相同圖片的 OCR cache |
 | `--strict` | false | 任一樣本或翻譯失敗即中止 |
-| `--stage` | 全流程 | `probe/sample/cache/ocr/track/translate/cleanup/emit` |
+| `--stage` | 全流程 | 只跑單一階段 `probe/sample/cache/ocr/track/translate/cleanup/emit` |
+| `--from-stage` | 頭 | 從指定階段跑到最後(與 `--to-stage` 合用成區間) |
+| `--to-stage` | 尾 | 從頭跑到指定階段 |
 
 ## 工作目錄與續跑
 
