@@ -55,6 +55,47 @@ def empty_result() -> dict:
     return {"language": None, "model": None, "segments": []}
 
 
+def _register_cuda_dll_dirs() -> None:
+    """Windows:把 pip 安裝的 nvidia cuBLAS/cuDNN bin 目錄加進 DLL 搜尋路徑。
+
+    ctranslate2 只把自己的套件目錄加進搜尋路徑,不會處理 ``site-packages/nvidia/*/bin``。
+    因此在 GPU 上建立模型時,Windows 用裸檔名找不到 ``cublas64_12.dll``、
+    ``cudnn_ops64_9.dll`` 等,導致 WinError 126/127。這裡在 import faster-whisper
+    前先把這些目錄註冊進來。非 Windows 或找不到目錄時皆為 no-op。
+    """
+    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+        return
+    try:
+        import nvidia
+    except Exception:
+        return
+    for base in getattr(nvidia, "__path__", []):
+        for bin_dir in Path(base).glob("*/bin"):
+            if bin_dir.is_dir():
+                try:
+                    os.add_dll_directory(str(bin_dir))
+                except OSError:
+                    pass
+
+
+def preload_backend(log=print) -> None:
+    """在載入 paddle(OCR)前先載入 ctranslate2,避免 Windows DLL 順序衝突。
+
+    OCR(PaddleOCR/paddle)與 ASR(faster-whisper/ctranslate2)在 Windows 上
+    共用 Intel OpenMP 等原生 DLL。若 paddle 先載入,之後載 ``ctranslate2.dll``
+    會綁到 paddle 已載入的同名 DLL、找不到需要的函式,拋出
+    ``OSError [WinError 127]``。反之先載 ctranslate2 則兩者可共存。
+
+    因此 pipeline 在進入 OCR 前(啟用 ASR 時)先呼叫本函式暖身。失敗不阻斷
+    流程——真正的錯誤留待 :func:`transcribe` 實際轉錄時再明確回報。
+    """
+    _register_cuda_dll_dirs()
+    try:
+        import ctranslate2  # noqa: F401  # 觸發其 DLL 載入,搶在 paddle 之前就位
+    except Exception as e:  # pragma: no cover - 取決於環境
+        log(f"[asr] 預載 ctranslate2 失敗(將於轉錄階段重試):{e}")
+
+
 def _resolve_device(device: str) -> str:
     if device != "auto":
         return device
@@ -74,6 +115,7 @@ def _resolve_compute_type(compute_type: str, device: str) -> str:
 
 def transcribe(input_path: Path | str, work: Path | str, cfg, log=print) -> dict:
     """抽取音訊並以 faster-whisper 轉錄,回傳 {language, model, segments}。"""
+    _register_cuda_dll_dirs()
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:  # pragma: no cover - 取決於是否安裝 extra

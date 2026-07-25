@@ -207,6 +207,11 @@ def run_pipeline(
         stats["sample_count"] = len(samples)
         save_stats()
 
+    # ASR 與 OCR 的原生 DLL 在 Windows 上會依載入順序衝突(WinError 127);
+    # 若啟用 ASR,在載入 paddle(OCR)前先暖身 ctranslate2,確保其 DLL 先就位。
+    if cfg.audio_transcribe and wanted("asr"):
+        asr.preload_backend(log=log)
+
     # ---- Stage 3+4: ocr(含 exact-image cache)----
     if wanted("ocr"):
         _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log)
