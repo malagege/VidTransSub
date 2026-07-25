@@ -214,7 +214,7 @@ def run_pipeline(
 
     # ---- Stage 3+4: ocr(含 exact-image cache)----
     if wanted("ocr"):
-        _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log)
+        provider = _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log)
         save_stats()
 
     # ---- Stage 5: track ----
@@ -234,6 +234,9 @@ def run_pipeline(
 
     # ---- Stage: asr(語音轉字幕;預設關閉,與 OCR 平行的獨立分支) ----
     if wanted("asr"):
+        # 同一行程接著跑 ASR 前,先釋放 OCR 佔用的顯存,避免 large-v3 等 CUDA OOM。
+        if cfg.audio_transcribe and provider is not None and hasattr(provider, "release"):
+            provider.release(log=log)
         _run_asr_stage(cfg, work, input_path, manifest, stats, durations, log)
         save_stats()
 
@@ -294,7 +297,7 @@ def run_pipeline(
     return stats
 
 
-def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log) -> None:
+def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log) -> OCRProvider | None:
     (work / "ocr").mkdir(parents=True, exist_ok=True)
 
     if provider is None:
@@ -307,7 +310,7 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
 
     if manifest.stage_done("ocr", ocr_hash):
         log("[ocr] 已完成,跳過")
-        return
+        return provider
 
     # 參數變更 -> 既有 ocr/*.json 過期,清除後重跑。
     prev_hash = manifest.stage_params_hash("ocr")
@@ -463,6 +466,7 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
     manifest.mark_done("ocr", ocr_hash)
     log(f"[ocr] 完成:cache 命中 {cache_hits}、實送 OCR {cache_misses}、"
         f"無文字 {no_text}、失敗 {len(failed)}")
+    return provider
 
 
 def _write_ocr(work: Path, sample: dict, normalized: dict, raw) -> None:

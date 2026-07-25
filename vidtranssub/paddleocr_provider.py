@@ -116,6 +116,31 @@ class PaddleOCRProvider:
             ) from e
         return self._pipeline
 
+    def release(self, log=print) -> None:
+        """釋放 GPU 資源:丟棄已載入的 pipeline 並清空 paddle 顯存池。
+
+        OCR/track 之後的階段(ASR、translate)不再需要 OCR 模型。在同一行程接著
+        跑 ASR(faster-whisper)前呼叫本方法,把 PaddleOCR-VL 佔用的顯存還給
+        驅動,避免載入大型 ASR 模型(如 large-v3)時 CUDA out of memory。
+
+        可安全重複呼叫;未初始化或非 GPU 時為 no-op。釋放後若再辨識會自動
+        重新初始化(見 :meth:`_ensure_pipeline`)。
+        """
+        import gc
+        import sys
+
+        had_pipeline = self._pipeline is not None
+        self._pipeline = None
+        gc.collect()
+        paddle = sys.modules.get("paddle")
+        if paddle is not None:
+            try:
+                paddle.device.cuda.empty_cache()
+            except Exception:
+                pass
+        if had_pipeline:
+            log("[ocr] 已釋放 PaddleOCR-VL 顯存,供後續階段使用")
+
     def _static_fingerprint(self) -> dict:
         """不需啟動 pipeline 的指紋內容(server 資訊只放後端與服務端模型名)。
 
