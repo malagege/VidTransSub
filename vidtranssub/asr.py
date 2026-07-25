@@ -135,14 +135,17 @@ def transcribe(input_path: Path | str, work: Path | str, cfg, log=print) -> dict
 
     device = _resolve_device(cfg.asr_device)
     compute_type = _resolve_compute_type(cfg.asr_compute_type, device)
-    log(f"[asr] 載入 faster-whisper:model={cfg.asr_model}、device={device}、compute={compute_type}")
+    log(f"[asr] 載入 faster-whisper:model={cfg.asr_model}、device={device}、compute={compute_type}"
+        f"、vad={'on' if cfg.asr_vad else 'off'}")
     try:
         model = WhisperModel(cfg.asr_model, device=device, compute_type=compute_type)
     except Exception as e:  # pragma: no cover - 取決於環境/模型
         raise ASRInitError(f"faster-whisper 載入失敗:{e}") from e
 
+    # vad_filter 開啟時 faster-whisper 會先跑 Silero VAD 只保留「有語音」的區段;
+    # 對含配樂/人聲偏小的片容易把整段誤判成非語音而丟掉,故預設關閉(見 cfg.asr_vad)。
     segments_iter, info = model.transcribe(
-        str(wav), language=cfg.asr_language, vad_filter=True
+        str(wav), language=cfg.asr_language, vad_filter=cfg.asr_vad
     )
     segments: list[dict] = []
     for seg in segments_iter:

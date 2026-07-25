@@ -100,6 +100,10 @@ vidtranssub input.mp4 --audio-transcribe --asr-model medium \
 - 語音辨識與 OCR 是**平行的獨立分支**,只在翻譯/輸出階段合流;調整 OCR 參數不會重跑語音辨識,
   反之亦然。語音文字與 OCR 共用同一套 LLM 翻譯快取去重。
 - 影片無音軌時自動略過。faster-whisper 首次會下載模型(`large-v3` 約 3GB;可改 `medium`/`small`)。
+- **VAD 靜音過濾預設關閉**:faster-whisper 內建的 Silero VAD 會先把「非語音」區段丟掉再轉錄,
+  但對**含配樂、人聲偏小或混音**的長片,常把整段音訊誤判成靜音而丟掉,結果只剩 1~2 段、
+  時間也對不上畫面。因此本工具預設**不啟用** VAD,對整段音訊轉錄。若你的片是乾淨人聲、
+  想靠 VAD 略過長靜音以加速或減少幻覺字幕,再加 `--asr-vad` 開啟。
 
 ### 讓 OCR 與翻譯分開吃 VRAM
 
@@ -273,6 +277,7 @@ probe → sample → ocr(含 exact-image cache)→ track → asr → translate �
 | `--audio-transcribe` | false | 啟用語音轉字幕(需 `[asr]` extra) |
 | `--asr-model` | `large-v3` | faster-whisper 模型(VRAM 吃緊可用 `medium`/`small`) |
 | `--asr-language` | auto | 語音原文語言 |
+| `--asr-vad` | false | 啟用 Silero VAD 靜音過濾(預設關;含配樂/小聲人聲的片開啟後易被整段誤丟) |
 | `--audio-color` | `yellow` | ASS 語音字幕顏色(顏色名/`#RRGGBB`/`&H..`;SRT 不分色) |
 | `--audio-subtitle-position` | `top` | ASS 語音字幕位置 `bottom/top` |
 | `--no-ocr-cache` | false | 停用完全相同圖片的 OCR cache |

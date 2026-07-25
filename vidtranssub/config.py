@@ -55,6 +55,8 @@ class Config:
     asr_device: str = "auto"  # auto/cuda/cpu
     asr_compute_type: str = "auto"  # auto -> cuda:float16 / cpu:int8
     asr_language: str | None = None  # None = 自動偵測
+    asr_vad: bool = False  # faster-whisper 內建 Silero VAD 靜音過濾;預設關閉
+    # (開啟時對含配樂/人聲偏小的片,VAD 常把整段音訊誤判成非語音而丟掉,只剩 1~2 段)
     audio_subtitle_position: str = "top"  # ASS 語音字幕位置 bottom/top(預設頂部,與 OCR 底部區隔)
     audio_subtitle_color: str = "yellow"  # ASS 語音字幕顏色(顏色名/#RRGGBB/&H..)
 
@@ -126,6 +128,7 @@ class Config:
             "enabled": self.audio_transcribe,
             "model": self.asr_model,
             "language": self.asr_language,
+            "vad": self.asr_vad,
         }
 
     def translate_params(self, resolved_model: str) -> dict:

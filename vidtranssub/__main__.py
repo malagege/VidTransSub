@@ -65,6 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--asr-compute-type", default="auto",
                    help="faster-whisper compute_type(auto -> cuda:float16 / cpu:int8)")
     p.add_argument("--asr-language", default=None, help="語音原文語言(預設自動偵測)")
+    p.add_argument("--asr-vad", action="store_true",
+                   help="啟用 faster-whisper 內建 Silero VAD 靜音過濾(預設關閉;"
+                        "含配樂/小聲人聲的片開啟後常被整段誤丟成 1~2 段)")
     p.add_argument("--audio-subtitle-position", choices=["bottom", "top"], default="top",
                    help="ASS 語音字幕位置(預設頂部,與 OCR 底部區隔)")
     p.add_argument("--audio-color", default="yellow",
@@ -121,6 +124,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         asr_device=args.asr_device,
         asr_compute_type=args.asr_compute_type,
         asr_language=args.asr_language,
+        asr_vad=args.asr_vad,
         audio_subtitle_position=args.audio_subtitle_position,
         audio_subtitle_color=args.audio_color,
         llm_model=args.llm_model,
