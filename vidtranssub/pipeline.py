@@ -61,12 +61,20 @@ def build_provider(cfg: Config) -> OCRProvider:
     if cfg.ocr_provider == "paddleocr-vl":
         from .paddleocr_provider import PaddleOCRProvider
 
+        # server API key 只從環境變數取,不進 Config/manifest/log。
+        server_api_key = (
+            os.environ.get(cfg.ocr_api_key_env) if cfg.ocr_server_url else None
+        )
         return PaddleOCRProvider(
             model=cfg.paddleocr_model,
             engine=cfg.paddleocr_engine,
             device=cfg.ocr_device,
             batch_size=cfg.ocr_batch_size,
             confidence=cfg.ocr_confidence,
+            server_url=cfg.ocr_server_url,
+            server_backend=cfg.ocr_server_backend,
+            server_model=cfg.ocr_server_model,
+            server_api_key=server_api_key,
         )
     raise PipelineError(f"未知的 --ocr-provider:{cfg.ocr_provider}")
 
@@ -156,6 +164,8 @@ def run_pipeline(
     log(f"取樣間隔   : {cfg.interval}s")
     log(f"預估樣本數 : ~{est}")
     log(f"OCR provider: {cfg.ocr_provider}")
+    if cfg.ocr_server_url:
+        log(f"OCR VLM server: {cfg.ocr_server_backend} @ {cfg.ocr_server_url}")
     log(f"目標語言   : {cfg.target_lang}")
     log(f"工作目錄   : {work}")
     log("=========================")

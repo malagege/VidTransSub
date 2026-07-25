@@ -34,6 +34,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ocr-device", default="auto", help="PaddleOCR-VL 執行裝置")
     p.add_argument("--ocr-batch-size", type=int, default=8, help="每批送入 PaddleOCR-VL 的 sample 數")
     p.add_argument("--ocr-confidence", type=float, default=None, help="provider 有分數時才啟用的最低門檻")
+    p.add_argument(
+        "--ocr-server-url", default=None,
+        help="PaddleOCR genai_server 的 OpenAI-compatible base URL(例如 http://GPU_HOST:8118/v1);"
+        "指定後 VLM 辨識走遠端 server,layout 仍在本地(未指定則維持 in-process)",
+    )
+    p.add_argument(
+        "--ocr-server-backend",
+        choices=["vllm-server", "sglang-server", "fastdeploy-server", "mlx-vlm-server", "llama-cpp-server"],
+        default="vllm-server",
+        help="OCR VLM server 後端類型(對應 PaddleOCR-VL 的 vl_rec_backend)",
+    )
+    p.add_argument(
+        "--ocr-server-model", default=None,
+        help="server 端模型名稱(vl_rec_api_model_name;預設沿用 --paddleocr-model)",
+    )
+    p.add_argument(
+        "--ocr-api-key-env", default="PADDLEOCR_VL_API_KEY",
+        help="存放 OCR server API key 的環境變數名稱(server 免金鑰時可忽略)",
+    )
     p.add_argument("--llm-model", default=None, help="翻譯模型名稱(預設取上游第一個)")
     p.add_argument("--llm-cache-url", default="http://127.0.0.1:8790",
                    help="外部 OpenAI-compatible LLM cache API base URL")
@@ -77,6 +96,10 @@ def config_from_args(args: argparse.Namespace) -> Config:
         ocr_batch_size=args.ocr_batch_size,
         ocr_confidence=args.ocr_confidence,
         no_ocr_cache=args.no_ocr_cache,
+        ocr_server_url=args.ocr_server_url,
+        ocr_server_backend=args.ocr_server_backend,
+        ocr_server_model=args.ocr_server_model,
+        ocr_api_key_env=args.ocr_api_key_env,
         llm_model=args.llm_model,
         llm_cache_url=args.llm_cache_url,
         text_similarity=args.text_similarity,

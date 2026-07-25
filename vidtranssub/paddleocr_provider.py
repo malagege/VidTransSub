@@ -23,6 +23,15 @@ BASELINE_OPTIONS = {
     "use_chart_recognition": False,
 }
 
+# 支援的 VLM server 後端(對應 PaddleOCR-VL 的 vl_rec_backend)。
+SERVER_BACKENDS = (
+    "vllm-server",
+    "sglang-server",
+    "fastdeploy-server",
+    "mlx-vlm-server",
+    "llama-cpp-server",
+)
+
 
 class PaddleOCRInitError(RuntimeError):
     pass
@@ -39,6 +48,10 @@ class PaddleOCRProvider:
         batch_size: int = 8,
         confidence: float | None = None,
         pipeline_options: dict | None = None,
+        server_url: str | None = None,
+        server_backend: str = "vllm-server",
+        server_model: str | None = None,
+        server_api_key: str | None = None,
     ):
         self.model = model
         self.engine = engine
@@ -46,10 +59,39 @@ class PaddleOCRProvider:
         self.batch_size = max(1, int(batch_size))
         self.confidence = confidence
         self.options = {**BASELINE_OPTIONS, **(pipeline_options or {})}
+        # VLM server 橋接:給了 server_url 才啟用(layout 仍在本地跑)。
+        self.server_url = server_url or None
+        self.server_backend = server_backend
+        self.server_model = server_model or None
+        self.server_api_key = server_api_key or None
+        if self.server_url and self.server_backend not in SERVER_BACKENDS:
+            raise PaddleOCRInitError(
+                f"未知的 OCR server backend:{self.server_backend};"
+                f"可用:{', '.join(SERVER_BACKENDS)}"
+            )
         self._pipeline = None
         self._paddleocr_version: str | None = None
 
     # ---- 初始化 ----
+
+    def _pipeline_kwargs(self) -> dict:
+        """組出傳給 PaddleOCRVL 的 kwargs(抽出以便測試,不需載入 paddleocr)。
+
+        server 模式只多轉發 vl_rec_* 參數,把 VLM 辨識委派給已啟動的 genai_server;
+        layout 偵測與其他選項一律沿用 in-process 行為。
+        """
+        kwargs = dict(self.options)
+        if self.device and self.device != "auto":
+            kwargs["device"] = self.device
+        if self.engine:
+            kwargs["backend"] = self.engine
+        if self.server_url:
+            kwargs["vl_rec_backend"] = self.server_backend
+            kwargs["vl_rec_server_url"] = self.server_url
+            kwargs["vl_rec_api_model_name"] = self.server_model or self.model
+            if self.server_api_key:
+                kwargs["vl_rec_api_key"] = self.server_api_key
+        return kwargs
 
     def _ensure_pipeline(self):
         if self._pipeline is not None:
@@ -65,30 +107,36 @@ class PaddleOCRProvider:
                 f"(pip install 'vidtranssub[ocr]')。原始錯誤:{e}"
             ) from e
 
-        kwargs = dict(self.options)
-        if self.device and self.device != "auto":
-            kwargs["device"] = self.device
-        if self.engine:
-            kwargs["backend"] = self.engine
         try:
-            self._pipeline = PaddleOCRVL(**kwargs)
+            self._pipeline = PaddleOCRVL(**self._pipeline_kwargs())
         except Exception as e:  # pragma: no cover
             raise PaddleOCRInitError(
                 f"PaddleOCR-VL 初始化失敗(engine={self.engine} device={self.device}"
-                f" model={self.model}):{e}"
+                f" model={self.model} server={self.server_url or '無'}):{e}"
             ) from e
         return self._pipeline
 
-    def fingerprint(self) -> dict:
-        """寫入 manifest 與 cache key 的 OCR 指紋。啟動 pipeline 以取得實際版本。"""
-        self._ensure_pipeline()
-        return {
-            "paddleocr_version": self._paddleocr_version,
+    def _static_fingerprint(self) -> dict:
+        """不需啟動 pipeline 的指紋內容(server 資訊只放後端與服務端模型名)。
+
+        刻意不含 server_url 與 api key:同一顆模型換一台機器不該讓整份 cache 失效,
+        金鑰更不可寫入 manifest/log。
+        """
+        fp = {
             "model": self.model,
             "engine": self.engine,
             "device": self.device,
             "options": self.options,
         }
+        if self.server_url:
+            fp["vl_rec_backend"] = self.server_backend
+            fp["vl_rec_model"] = self.server_model or self.model
+        return fp
+
+    def fingerprint(self) -> dict:
+        """寫入 manifest 與 cache key 的 OCR 指紋。啟動 pipeline 以取得實際版本。"""
+        self._ensure_pipeline()
+        return {"paddleocr_version": self._paddleocr_version, **self._static_fingerprint()}
 
     # ---- 辨識 ----
 

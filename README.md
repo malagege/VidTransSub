@@ -74,6 +74,37 @@ vidtranssub input.mp4 --from-stage track --target-lang zh-TW
 `--stage X` 仍表示只跑單一階段;`--from-stage`/`--to-stage` 表示跑一段連續區間(可省略其一取頭/尾),
 兩者互斥。
 
+### 把 OCR 的 VLM 推到另一台 GPU server(genai_server 橋接)
+
+PaddleOCR-VL 分成「本地 layout 偵測 + VLM 辨識」兩段。吃 VRAM 的是 VLM;可用 PaddleOCR 內建的
+`genai_server` 把 VLM 獨立成一個 OpenAI-compatible 服務,本工具只在本地跑輕量 layout,再透過 HTTP
+呼叫遠端 VLM。適合把 VLM 常駐在一台 Linux GPU server、其餘流程留在你的機器。
+
+```bash
+# ① Linux GPU server 上:啟動 VLM 服務(吃顯卡的是這支)
+paddleocr genai_server --model_name PaddleOCR-VL-1.6-0.9B --backend vllm --port 8118
+
+# ② 本工具端:layout 在本地,VLM 走遠端 server
+vidtranssub input.mp4 --target-lang zh-TW \
+  --ocr-server-url http://GPU_HOST:8118/v1 \
+  --ocr-server-backend vllm-server \
+  --ocr-server-model PaddleOCR-VL-1.6-0.9B
+```
+
+- 未指定 `--ocr-server-url` 時維持原本的 in-process 行為,完全不受影響。
+- `--ocr-server-backend` 可選 `vllm-server` / `sglang-server` / `fastdeploy-server` /
+  `mlx-vlm-server` / `llama-cpp-server`(對應官方文件的 `vl_rec_backend`)。
+- server 需要金鑰時,把金鑰放進環境變數(預設讀 `PADDLEOCR_VL_API_KEY`,可用 `--ocr-api-key-env`
+  改名);金鑰只在執行時讀取,不寫入 manifest/log,也不進 OCR cache key。
+- server 後端與服務端模型名會併入 OCR cache 指紋,因此「本地跑」與「server 跑」的結果會分開快取、
+  不互相污染;但更換 server 主機(URL)不會讓既有 cache 失效。
+- **官方提醒**:layout 用的 transformers 與 vLLM 在同一環境相依會衝突,建議如上「本地 layout /
+  遠端 VLM」分開部署。實際 `vl_rec_*` 參數名請以你 pin 的 paddleocr 版本為準(見 [官方文件](https://www.paddleocr.ai/latest/en/version3.x/pipeline_usage/PaddleOCR-VL.html))。
+
+> **Windows 使用者注意**:`paddleocr genai_server`(vLLM/SGLang 後端)實務上跑在 Linux + CUDA。
+> 本工具的 **client 端(`--ocr-server-url ...`)在 Windows 可正常使用**,只要把 server 那支開在
+> Linux GPU 機器上、Windows 這端連過去即可;不需在 Windows 本機啟動 genai_server。
+
 ## 新手快速上手(含 GPU 安裝與疑難排解)
 
 ### 用 NVIDIA 顯卡加速(Windows)
@@ -182,6 +213,10 @@ probe → sample → ocr(含 exact-image cache)→ track → translate → clean
 | `--source-lang` | auto | 原文語言 |
 | `--ocr-batch-size` | `8` | 每批送入 PaddleOCR-VL 的 sample 數 |
 | `--ocr-confidence` | 停用 | provider 有分數時才啟用的最低門檻 |
+| `--ocr-server-url` | in-process | 指定 PaddleOCR genai_server base URL(如 `http://GPU_HOST:8118/v1`)後,VLM 辨識走遠端 server |
+| `--ocr-server-backend` | `vllm-server` | server 後端:`vllm/sglang/fastdeploy/mlx-vlm/llama-cpp -server` |
+| `--ocr-server-model` | 同 `--paddleocr-model` | server 端模型名(`vl_rec_api_model_name`) |
+| `--ocr-api-key-env` | `PADDLEOCR_VL_API_KEY` | 存放 OCR server API key 的環境變數名稱 |
 | `--llm-model` | 上游第一個 | 翻譯模型名稱 |
 | `--llm-cache-url` | `http://127.0.0.1:8790` | 外部 LLM cache API base URL |
 | `--text-similarity` | `0.85` | 相鄰文字合併門檻 |

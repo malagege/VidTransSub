@@ -41,6 +41,14 @@ class Config:
     ocr_confidence: float | None = None  # None = 停用門檻
     no_ocr_cache: bool = False
 
+    # --- OCR VLM server 橋接(可選;None = 維持 in-process VLM) ---
+    # 指定後,layout 仍在本地跑,VLM 辨識改走已啟動的 PaddleOCR genai_server
+    # (OpenAI-compatible)。適合把吃 VRAM 的 VLM 推到另一台 Linux GPU server。
+    ocr_server_url: str | None = None  # 例如 http://GPU_HOST:8118/v1
+    ocr_server_backend: str = "vllm-server"  # vllm/sglang/fastdeploy/mlx-vlm/llama-cpp -server
+    ocr_server_model: str | None = None  # 服務端模型名;None = 沿用 paddleocr_model
+    ocr_api_key_env: str = "PADDLEOCR_VL_API_KEY"  # 存放 server API key 的環境變數名稱
+
     # --- 翻譯 ---
     llm_model: str | None = None  # None = 取上游第一個
     llm_cache_url: str = "http://127.0.0.1:8790"
