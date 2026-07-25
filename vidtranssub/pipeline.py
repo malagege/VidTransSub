@@ -542,14 +542,22 @@ def _run_translate_stage(cfg, work, manifest, stats, durations, log) -> None:
     translations: dict[str, list[str]] = {}
     failed_cues: list[str] = []
 
+    total = len(unique)
+    # 約每 5% 印一次進度(cue 多時才印,避免少量時洗版)。
+    step = max(1, total // 20)
     with LLMCacheClient(cfg.llm_cache_url, resolved_model) as client:
-        for key, texts in unique.items():
+        for i, (key, texts) in enumerate(unique.items(), 1):
             translated, failed_idx = client.translate_cue_detailed(
                 texts, cfg.source_lang, cfg.target_lang
             )
             translations[key] = translated
             if failed_idx:
                 failed_cues.append(key)
+            if total >= 25 and (i % step == 0 or i == total):
+                elapsed = time.monotonic() - t0
+                log(f"[translate] 已處理 {i}/{total} 個唯一 cue"
+                    f"(cache 命中 {client.cache_hits}、上游 {client.upstream_calls}、"
+                    f"{elapsed:.0f}s)")
         cache_hits = client.cache_hits
         cache_misses = client.cache_misses
         upstream_calls = client.upstream_calls
