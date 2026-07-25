@@ -159,22 +159,47 @@ def _models_fallback(default_model: str | None) -> dict:
     return {"object": "list", "data": data}
 
 
-def create_app(upstream: Upstream, store: CacheStore, default_model: str | None = None):
-    """建立 FastAPI app;hits/misses 為記憶體計數(client 以前後差值算命中率)。"""
+def _user_preview(body: dict, limit: int = 30) -> str:
+    """取最後一則 user 訊息的前段文字,供 log 顯示「正在翻什麼」。"""
+    for m in reversed(body.get("messages", []) or []):
+        if m.get("role") == "user":
+            text = " ".join(str(m.get("content", "")).split())
+            return text[:limit] + ("…" if len(text) > limit else "")
+    return ""
+
+
+def create_app(
+    upstream: Upstream,
+    store: CacheStore,
+    default_model: str | None = None,
+    log=None,
+):
+    """建立 FastAPI app;hits/misses 為記憶體計數(client 以前後差值算命中率)。
+
+    log:可選的單引數 callable;提供時對每個請求印一行(HIT/MISS/錯誤)。
+    預設 None(靜默),不影響程式化使用與測試輸出。
+    """
     app = FastAPI(title="VideoTransSub LLM cache proxy")
     app.state.hits = 0
     app.state.misses = 0
+    app.state.requests = 0
 
     @app.get("/v1/models")
     async def models():
         try:
             status, data = upstream.models()
         except httpx.HTTPError:
+            if log:
+                log("[llm-cache] /v1/models 上游連線失敗,改回報 default-model")
             return JSONResponse(content=_models_fallback(default_model))
         if status != 200:
             if default_model:
+                if log:
+                    log(f"[llm-cache] /v1/models 上游 {status},改回報 default-model")
                 return JSONResponse(content=_models_fallback(default_model))
             return JSONResponse(status_code=status, content=data)
+        if log:
+            log("[llm-cache] /v1/models 轉發上游成功")
         return JSONResponse(content=data)
 
     @app.get("/vtf/stats")
@@ -189,15 +214,24 @@ def create_app(upstream: Upstream, store: CacheStore, default_model: str | None 
     async def chat(request: Request):
         body = await request.json()
         key = normalize_key(body)
+        app.state.requests += 1
+        n = app.state.requests
+        preview = _user_preview(body) if log else ""
 
         cached = store.get(key)
         if cached is not None:
             app.state.hits += 1
+            if log:
+                log(f"[llm-cache] #{n} HIT  命中={app.state.hits} 未命中={app.state.misses}"
+                    f"  「{preview}」")
             return JSONResponse(content=cached, headers={"x-vtf-cache": "hit"})
 
+        t0 = time.monotonic()
         try:
             status, data, extra = upstream.chat(body)
         except httpx.HTTPError as e:
+            if log:
+                log(f"[llm-cache] #{n} 上游連線失敗:{e}")
             return JSONResponse(
                 status_code=502,
                 content={"error": {"message": f"上游連線失敗:{e}"}},
@@ -206,6 +240,8 @@ def create_app(upstream: Upstream, store: CacheStore, default_model: str | None 
 
         if status != 200:
             # 錯誤不快取;保留 Retry-After 讓 client 遵守 429。
+            if log:
+                log(f"[llm-cache] #{n} 上游錯誤 status={status}(不快取)")
             headers = {"x-vtf-cache": "miss"}
             if "Retry-After" in extra:
                 headers["Retry-After"] = extra["Retry-After"]
@@ -213,6 +249,10 @@ def create_app(upstream: Upstream, store: CacheStore, default_model: str | None 
 
         app.state.misses += 1
         store.put(key, data)
+        if log:
+            ms = (time.monotonic() - t0) * 1000
+            log(f"[llm-cache] #{n} MISS 上游 {ms:.0f}ms 命中={app.state.hits}"
+                f" 未命中={app.state.misses}  「{preview}」")
         return JSONResponse(content=data, headers={"x-vtf-cache": "miss"})
 
     return app
@@ -242,6 +282,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="上游 /v1/models 無法取得時,回報給 client 的模型名稱",
     )
+    p.add_argument(
+        "--quiet", action="store_true",
+        help="不印每筆請求日誌(預設會逐筆顯示 HIT/MISS,方便確認有在運作)",
+    )
     return p
 
 
@@ -258,13 +302,21 @@ def main() -> None:
     api_key = os.environ.get(args.api_key_env) or None
     upstream = HttpUpstream(args.upstream_url, api_key=api_key)
     store = CacheStore(args.db)
-    app = create_app(upstream, store, default_model=args.default_model)
+
+    def _log(msg: str) -> None:
+        print(msg, flush=True)  # flush 確保被重導/管線時仍即時顯示
+
+    request_log = None if args.quiet else _log
+    app = create_app(
+        upstream, store, default_model=args.default_model, log=request_log
+    )
 
     print(
         f"[llm-cache] 監聽 http://{args.host}:{args.port}"
         f"  上游={args.upstream_url}"
         f"  金鑰={'有' if api_key else '無'}"
         f"  DB={args.db}"
+        f"  逐筆日誌={'關' if args.quiet else '開'}"
     )
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

@@ -159,6 +159,31 @@ def test_cache_persists_across_restart(tmp_path):
     assert up2.chat_calls == 0
 
 
+def test_request_log_callback_reports_miss_then_hit(tmp_path):
+    upstream = FakeUpstream()
+    store = CacheStore(str(tmp_path / "c.db"))
+    lines: list[str] = []
+    app = create_app(upstream, store, log=lines.append)
+    with TestClient(app) as client:
+        client.post("/v1/chat/completions", json=_body("hello"))  # miss
+        client.post("/v1/chat/completions", json=_body("hello"))  # hit
+    store.close()
+    assert any("MISS" in ln for ln in lines)
+    assert any("HIT" in ln for ln in lines)
+    # 預覽文字出現在日誌中
+    assert any("hello" in ln for ln in lines)
+
+
+def test_no_log_callback_is_silent(tmp_path, capsys):
+    upstream = FakeUpstream()
+    store = CacheStore(str(tmp_path / "c.db"))
+    app = create_app(upstream, store)  # log=None
+    with TestClient(app) as client:
+        client.post("/v1/chat/completions", json=_body("x"))
+    store.close()
+    assert capsys.readouterr().out == ""
+
+
 def test_normalize_key_ignores_volatile_fields():
     a = normalize_key({"model": "m", "messages": [], "stream": False, "request_id": "x"})
     b = normalize_key({"model": "m", "messages": [], "stream": True, "request_id": "y"})
