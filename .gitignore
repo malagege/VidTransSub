@@ -17,11 +17,15 @@ htmlcov/
 work/
 *.srt
 *.ass
+*.db
 
 # 測試產物
 tests/_artifacts/
 testdata/*.mp4
 testdata/src_frames/
+
+# 測試影片與執行產物(專案根目錄等)
+*.mp4
 
 # 參考用的舊專案,不納入版控
 VidTransFlow/
