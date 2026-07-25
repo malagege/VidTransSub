@@ -58,6 +58,24 @@ vidtranssub input.mp4 --stage ocr
 
 任何時刻 Ctrl+C 中斷後,重跑相同指令即從斷點續跑。
 
+### 一次處理多個影片(批次)
+
+`input` 可一次給**多個路徑**,或用**萬用字元**(`*.mp4` 等;Windows 的 cmd/PowerShell 不會自動展開,
+由本程式代為展開):
+
+```bash
+# 多個路徑
+vidtranssub a.mp4 b.mp4 c.mp4 --target-lang zh-TW
+
+# 萬用字元:處理整個資料夾
+vidtranssub "videos/*.mp4" --target-lang zh-TW
+```
+
+- 逐一處理,**單檔失敗不中斷整批**;結束時列出「成功 X/N」與失敗清單(有失敗則 exit code 1)。
+- 每個影片各自有工作目錄與斷點,重跑相同指令會跳過已完成的檔案。
+- 多檔且會用到 OCR 時,**PaddleOCR 模型只載入一次**並重用,不會每個檔案重載。
+- 提示:把所有影片路徑放在一起(選項放前面或全部影片之後),避免與帶值的選項交錯。
+
 ### 把聲音也轉成字幕(語音辨識,預設關閉)
 
 除了畫面上的文字(OCR),還能把**聲音**用 [faster-whisper](https://github.com/SYSTRAN/faster-whisper)

@@ -21,7 +21,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="vidtranssub",
         description="固定秒數取樣畫面文字,PaddleOCR-VL 辨識 + 外部 LLM cache API 翻譯,輸出 SRT/ASS",
     )
-    p.add_argument("input", help="輸入影片路徑")
+    p.add_argument(
+        "inputs", nargs="+", metavar="input",
+        help="輸入影片路徑,可一次給多個;支援萬用字元(如 *.mp4,Windows 由本程式展開)",
+    )
     p.add_argument("--interval", type=float, default=1.0, help="每隔幾秒取樣,可用小數(預設 1.0)")
     p.add_argument("--max-width", type=int, default=1920, help="OCR 圖片最大寬度,0 為不縮放")
     p.add_argument("--image-quality", type=int, default=3, help="取樣 JPEG 品質(ffmpeg -q:v,2 最佳 31 最差)")
@@ -131,32 +134,101 @@ def config_from_args(args: argparse.Namespace) -> Config:
     )
 
 
+def expand_inputs(patterns: list[str]) -> list[str]:
+    """展開萬用字元並去重(保留順序)。
+
+    Windows 的 cmd/PowerShell 不會自動展開 *,故由本程式用 glob 展開;
+    不含萬用字元的路徑原樣保留(找不到時交由後續流程回報明確錯誤)。
+    """
+    import glob
+    from pathlib import Path
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for pat in patterns:
+        if any(c in pat for c in "*?["):
+            matches = sorted(glob.glob(pat))
+            if not matches:
+                print(f"警告:沒有符合的檔案:{pat}", file=sys.stderr)
+                continue
+        else:
+            matches = [pat]
+        for m in matches:
+            key = str(Path(m).resolve())
+            if key not in seen:
+                seen.add(key)
+                out.append(m)
+    return out
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     if args.stage is not None and (args.from_stage is not None or args.to_stage is not None):
         parser.error("--stage 不可與 --from-stage/--to-stage 併用")
 
-    from .pipeline import PipelineError, run_pipeline
+    from .pipeline import (
+        STAGE_INDEX, PipelineError, build_provider, run_pipeline, stage_bounds,
+    )
     from .asr import ASRError
     from .ffmpeg import FFmpegError
     from .llm_cache_client import TranslationError
     from .paddleocr_provider import PaddleOCRInitError
 
     cfg = config_from_args(args)
+    inputs = expand_inputs(args.inputs)
+    if not inputs:
+        print("錯誤:沒有可處理的輸入檔。", file=sys.stderr)
+        sys.exit(1)
+
+    run_errors = (
+        PipelineError, FFmpegError, TranslationError, PaddleOCRInitError, ASRError, ValueError,
+    )
+
+    # 只有當 ocr 階段在區間內、且不只一個檔案時,才預先載入 OCR provider 並重用,
+    # 避免每個檔案各自重載 PaddleOCR 模型。單檔維持原本的 lazy 載入(行為不變)。
+    provider = None
+    if len(inputs) > 1:
+        try:
+            lo, hi = stage_bounds(args.stage, args.from_stage, args.to_stage)
+        except PipelineError as e:
+            print(f"\n錯誤:{e}", file=sys.stderr)
+            sys.exit(1)
+        if lo <= STAGE_INDEX["ocr"] <= hi:
+            try:
+                provider = build_provider(cfg)
+            except (PaddleOCRInitError, PipelineError) as e:
+                print(f"\n錯誤:{e}", file=sys.stderr)
+                sys.exit(1)
+
+    total = len(inputs)
+    failures: list[tuple[str, str]] = []
     try:
-        run_pipeline(
-            cfg, args.input,
-            only_stage=args.stage,
-            from_stage=args.from_stage,
-            to_stage=args.to_stage,
-        )
+        for i, inp in enumerate(inputs, 1):
+            if total > 1:
+                print(f"\n########## [{i}/{total}] {inp} ##########")
+            try:
+                run_pipeline(
+                    cfg, inp, provider=provider,
+                    only_stage=args.stage,
+                    from_stage=args.from_stage,
+                    to_stage=args.to_stage,
+                )
+            except run_errors as e:
+                # 單檔失敗不中斷整批;保留該檔斷點,最後統一回報。
+                print(f"\n錯誤({inp}):{e}", file=sys.stderr)
+                print("(已保留該檔斷點,修正後重跑即可續跑)", file=sys.stderr)
+                failures.append((inp, str(e)))
     except KeyboardInterrupt:
         print("\n已中斷;重跑相同指令即可從斷點續跑。", file=sys.stderr)
         sys.exit(130)
-    except (PipelineError, FFmpegError, TranslationError, PaddleOCRInitError, ASRError, ValueError) as e:
-        print(f"\n錯誤:{e}", file=sys.stderr)
-        print("(已保留既有斷點,修正後重跑相同指令即可續跑)", file=sys.stderr)
+
+    if total > 1:
+        done = total - len(failures)
+        print(f"\n===== 批次完成:成功 {done}/{total} =====")
+        for inp, msg in failures:
+            print(f"  失敗:{inp} — {msg}", file=sys.stderr)
+    if failures:
         sys.exit(1)
 
 
