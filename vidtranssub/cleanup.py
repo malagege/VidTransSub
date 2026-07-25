@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from .asr import clean_text
 from .config import Config
 from .tracking import canonical_key
 
@@ -38,6 +39,7 @@ def finalize_cues(
             "source_lines": source_lines,
             "translated_lines": [t if t else s for t, s in zip(translated, source_lines)],
             "bboxes": list(cue["bboxes"]),
+            "source": "ocr",
         })
 
     out.sort(key=lambda c: (c["start"], c["end"]))
@@ -55,3 +57,43 @@ def finalize_cues(
         seen.add(key)
         deduped.append(c)
     return deduped
+
+
+def finalize_audio_events(
+    segments: list[dict], translations: dict[str, list[str]], cfg: Config, duration: float
+) -> list[dict]:
+    """把 ASR 片段套上譯文,產生標記 source="audio" 的字幕事件。
+
+    翻譯 key 與 translate 階段一致(clean_text 後單行 canonical_key);缺譯文時保留原文。
+    """
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for seg in segments:
+        text = clean_text(seg.get("text", ""))
+        if not text:
+            continue
+        translated = translations.get(canonical_key([text]))
+        line = translated[0] if (translated and len(translated) == 1 and translated[0]) else text
+
+        start = max(0.0, float(seg["start"]))
+        end = float(seg["end"])
+        if duration and duration > 0:
+            start = min(start, duration)
+            end = min(end, duration)
+        if end <= start:
+            continue
+
+        key = (round(start, 3), round(end, 3), text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "source_lines": [text],
+            "translated_lines": [line],
+            "bboxes": [],
+            "source": "audio",
+        })
+    out.sort(key=lambda c: (c["start"], c["end"]))
+    return out

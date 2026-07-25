@@ -11,8 +11,8 @@ import os
 import time
 from pathlib import Path
 
-from . import ffmpeg, subtitle
-from .cleanup import finalize_cues
+from . import asr, ffmpeg, subtitle
+from .cleanup import finalize_audio_events, finalize_cues
 from .config import Config, stable_hash
 from .llm_cache_client import LLMCacheClient, TranslationError, resolve_model
 from .manifest import STAGES, Manifest
@@ -166,6 +166,10 @@ def run_pipeline(
     log(f"OCR provider: {cfg.ocr_provider}")
     if cfg.ocr_server_url:
         log(f"OCR VLM server: {cfg.ocr_server_backend} @ {cfg.ocr_server_url}")
+    if cfg.audio_transcribe:
+        log(f"語音轉字幕 : 開啟(faster-whisper model={cfg.asr_model})")
+    else:
+        log("語音轉字幕 : 關閉")
     log(f"目標語言   : {cfg.target_lang}")
     log(f"工作目錄   : {work}")
     log("=========================")
@@ -223,6 +227,11 @@ def run_pipeline(
     elif wanted("track"):
         log("[track] 已完成,跳過")
 
+    # ---- Stage: asr(語音轉字幕;預設關閉,與 OCR 平行的獨立分支) ----
+    if wanted("asr"):
+        _run_asr_stage(cfg, work, input_path, manifest, stats, durations, log)
+        save_stats()
+
     # ---- Stage 6: translate ----
     if wanted("translate"):
         _run_translate_stage(cfg, work, manifest, stats, durations, log)
@@ -237,6 +246,12 @@ def run_pipeline(
         translations = _load_translations(work)
         cues = compose_cues(tracks, cfg)
         events = finalize_cues(cues, translations, cfg, duration)
+        # 併入語音字幕事件(來源標記 source="audio";無語音時為空,不影響 OCR 結果)。
+        audio_events = finalize_audio_events(
+            asr.read_segments(work), translations, cfg, duration
+        )
+        if audio_events:
+            events = sorted(events + audio_events, key=lambda c: (c["start"], c["end"]))
         _atomic_write_json(work / "events.json", {"events": events})
         durations["cleanup"] = round(time.monotonic() - t0, 2)
         manifest.mark_done("cleanup", cleanup_hash)
@@ -257,6 +272,8 @@ def run_pipeline(
         subtitle.write_text_no_bom(ass_path, subtitle.to_ass(
             events, int(video_info.get("width") or 0), int(video_info.get("height") or 0),
             cfg.subtitle_position, cfg.bilingual, cfg.max_lines,
+            audio_position=cfg.audio_subtitle_position,
+            audio_color=cfg.audio_subtitle_color,
         ))
         durations["emit"] = round(time.monotonic() - t0, 2)
         manifest.mark_done("emit", emit_hash)
@@ -460,6 +477,42 @@ def _load_ocr_results(work: Path, samples: list[dict]) -> list[OCRResult]:
     return results
 
 
+def _run_asr_stage(cfg, work, input_path, manifest, stats, durations, log) -> None:
+    asr_hash = stable_hash(cfg.asr_params())
+    if manifest.stage_done("asr", asr_hash):
+        log("[asr] 已完成,跳過")
+        return
+    manifest.invalidate("asr")
+    manifest.mark_running("asr", asr_hash)
+    t0 = time.monotonic()
+
+    if not cfg.audio_transcribe:
+        # 預設關閉:輸出空片段,後續 translate/cleanup/emit 視為無語音字幕。
+        asr.write_segments(work, asr.empty_result())
+        durations["asr"] = round(time.monotonic() - t0, 2)
+        manifest.mark_done("asr", asr_hash)
+        log("[asr] 語音轉字幕未啟用(加 --audio-transcribe 以啟用)")
+        return
+
+    if not manifest.video_info.get("has_audio", True):
+        asr.write_segments(work, asr.empty_result())
+        durations["asr"] = round(time.monotonic() - t0, 2)
+        manifest.mark_done("asr", asr_hash)
+        log("[asr] 影片無音軌,略過語音辨識")
+        return
+
+    result = asr.transcribe(input_path, work, cfg, log=log)
+    asr.write_segments(work, result)
+    durations["asr"] = round(time.monotonic() - t0, 2)
+    stats["asr"] = {
+        "segments": len(result["segments"]),
+        "language": result.get("language"),
+        "seconds": durations["asr"],
+    }
+    manifest.mark_done("asr", asr_hash)
+    log(f"[asr] 完成:{len(result['segments'])} 段語音字幕,偵測語言={result.get('language')}")
+
+
 def _run_translate_stage(cfg, work, manifest, stats, durations, log) -> None:
     resolved_model = resolve_model(cfg.llm_cache_url, cfg.llm_model)
     translate_hash = stable_hash(cfg.translate_params(resolved_model))
@@ -476,7 +529,15 @@ def _run_translate_stage(cfg, work, manifest, stats, durations, log) -> None:
     for cue in cues:
         unique.setdefault(canonical_key(cue["source_texts"]), cue["source_texts"])
 
-    log(f"[translate] {len(cues)} 條 cue,{len(unique)} 個唯一 cue,model={resolved_model}")
+    # 併入語音字幕文字,與 OCR 共用同一套 LLM cache 去重翻譯(單行 cue)。
+    audio_segments = asr.read_segments(work)
+    for seg in audio_segments:
+        txt = asr.clean_text(seg.get("text", ""))
+        if txt:
+            unique.setdefault(canonical_key([txt]), [txt])
+
+    log(f"[translate] {len(cues)} 條 OCR cue、{len(audio_segments)} 段語音,"
+        f"{len(unique)} 個唯一 cue,model={resolved_model}")
     t0 = time.monotonic()
     translations: dict[str, list[str]] = {}
     failed_cues: list[str] = []
@@ -535,6 +596,9 @@ def _print_summary(stats: dict, duration: float, video_info: dict, log) -> None:
     if ocr:
         log(f"OCR cache  : 命中 {ocr.get('cache_hits', 0)} / 實送 {ocr.get('images_sent_to_ocr', 0)}"
             f" / 無文字 {ocr.get('no_text_images', 0)} / 失敗 {len(ocr.get('failed_samples', []))}")
+    asr_stats = stats.get("asr", {})
+    if asr_stats:
+        log(f"語音字幕   : {asr_stats.get('segments', 0)} 段(語言 {asr_stats.get('language')})")
     tr = stats.get("translate", {})
     if tr:
         reqs = tr.get("cache_hits", 0) + tr.get("cache_misses", 0)

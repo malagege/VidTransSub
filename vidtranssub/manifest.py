@@ -11,14 +11,17 @@ import os
 import time
 from pathlib import Path
 
-STAGES = ["probe", "sample", "ocr", "track", "translate", "cleanup", "emit"]
+STAGES = ["probe", "sample", "ocr", "track", "asr", "translate", "cleanup", "emit"]
 
-# stage -> 若它重跑,必須一起重跑的下游階段
+# stage -> 若它重跑,必須一起重跑的下游階段。
+# asr(語音)是與 OCR 平行的獨立分支:只依賴 probe(音訊來源),不受 sample/ocr/track 影響,
+# 兩條分支在 translate/cleanup/emit 合流。故 sample/ocr/track 的下游刻意不含 asr。
 DOWNSTREAM = {
-    "probe": ["sample", "ocr", "track", "translate", "cleanup", "emit"],
+    "probe": ["sample", "ocr", "track", "asr", "translate", "cleanup", "emit"],
     "sample": ["ocr", "track", "translate", "cleanup", "emit"],
     "ocr": ["track", "translate", "cleanup", "emit"],
     "track": ["translate", "cleanup", "emit"],
+    "asr": ["translate", "cleanup", "emit"],
     "translate": ["cleanup", "emit"],
     "cleanup": ["emit"],
     "emit": [],

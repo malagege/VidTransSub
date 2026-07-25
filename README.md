@@ -32,6 +32,7 @@ uv venv --python 3.12
 uv pip install -e ".[dev]"      # 開發/測試
 uv pip install -e ".[ocr]"      # 實際辨識需要的 PaddleOCR-VL
 uv pip install -e ".[server]"   # 內建翻譯快取 proxy(接 Ollama/llama.cpp 等,選用)
+uv pip install -e ".[asr]"      # 語音轉字幕(faster-whisper,選用;預設關閉)
 ```
 
 ## 快速開始
@@ -56,6 +57,31 @@ vidtranssub input.mp4 --stage ocr
 產出(在輸入檔同目錄):`input.zh-TW.srt` 與 `input.zh-TW.ass`(UTF-8,不加 BOM)。
 
 任何時刻 Ctrl+C 中斷後,重跑相同指令即從斷點續跑。
+
+### 把聲音也轉成字幕(語音辨識,預設關閉)
+
+除了畫面上的文字(OCR),還能把**聲音**用 [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+轉成字幕並一併翻譯。此功能**預設關閉**——不加 `--audio-transcribe` 時,輸出與只做 OCR 完全相同,
+不受任何影響。
+
+```bash
+# 先安裝語音相依(只需一次)
+uv pip install -e ".[asr]"
+
+# 啟用語音轉字幕(自動偵測語言,翻成 zh-TW)
+vidtranssub input.mp4 --target-lang zh-TW --audio-transcribe
+
+# VRAM 吃緊可換小模型;也能指定原文語言、字幕顏色/位置
+vidtranssub input.mp4 --audio-transcribe --asr-model medium \
+  --asr-language ja --audio-color cyan --audio-subtitle-position top
+```
+
+- **顏色區分**:在 **ASS** 字幕中,OCR 字幕維持白色、語音字幕用 `--audio-color`(預設黃色),
+  且預設放**頂部**(`--audio-subtitle-position`,與 OCR 底部區隔);兩者可同時顯示、不混淆。
+  **SRT 不分色**(格式限制),只依時間合併兩種來源。
+- 語音辨識與 OCR 是**平行的獨立分支**,只在翻譯/輸出階段合流;調整 OCR 參數不會重跑語音辨識,
+  反之亦然。語音文字與 OCR 共用同一套 LLM 翻譯快取去重。
+- 影片無音軌時自動略過。faster-whisper 首次會下載模型(`large-v3` 約 3GB;可改 `medium`/`small`)。
 
 ### 讓 OCR 與翻譯分開吃 VRAM
 
@@ -191,16 +217,18 @@ uv run vidtranssub 你的影片.mp4 --target-lang zh-TW --llm-model qwen2.5
 ## 處理階段
 
 ```
-probe → sample → ocr(含 exact-image cache)→ track → translate → cleanup → emit
+probe → sample → ocr(含 exact-image cache)→ track → asr → translate → cleanup → emit
+                                                      └ 語音分支,預設關閉
 ```
 
-1. **probe**:`ffprobe` 讀時長/寬高/旋轉;算出預估樣本數。
+1. **probe**:`ffprobe` 讀時長/寬高/旋轉/是否有音軌;算出預估樣本數。
 2. **sample**:`ffmpeg fps=1/interval` 取樣為 JPEG,樣本時間由序號與 interval 計算。
 3. **ocr**:完全相同圖片(bytes + OCR 參數皆同)走 cache,其餘送 PaddleOCR-VL 完整 pipeline。
 4. **track**:正規化文字,依 bbox 與相似度把連續出現的文字合併為事件。
-5. **translate**:每個唯一 cue 一個穩定 request,呼叫外部 LLM cache API(`temperature=0`)。
-6. **cleanup**:排序、去重、時間裁切。
-7. **emit**:輸出 SRT/ASS。
+5. **asr**(預設關閉):`--audio-transcribe` 時抽音訊交 faster-whisper 轉逐段字幕;與 OCR 平行,只依賴 probe。
+6. **translate**:每個唯一 cue(含語音)一個穩定 request,呼叫外部 LLM cache API(`temperature=0`)。
+7. **cleanup**:排序、去重、時間裁切;OCR 與語音事件標記 `source` 後合併。
+8. **emit**:輸出 SRT/ASS(ASS 依 `source` 為語音字幕著色)。
 
 ## 常用參數
 
@@ -224,9 +252,14 @@ probe → sample → ocr(含 exact-image cache)→ track → translate → clean
 | `--reading-order` | `auto` | `auto/ltr/rtl/ttb` |
 | `--bilingual` | false | 譯文加原文雙語輸出 |
 | `--subtitle-position` | `bottom` | ASS 固定位置:`bottom/top` |
+| `--audio-transcribe` | false | 啟用語音轉字幕(需 `[asr]` extra) |
+| `--asr-model` | `large-v3` | faster-whisper 模型(VRAM 吃緊可用 `medium`/`small`) |
+| `--asr-language` | auto | 語音原文語言 |
+| `--audio-color` | `yellow` | ASS 語音字幕顏色(顏色名/`#RRGGBB`/`&H..`;SRT 不分色) |
+| `--audio-subtitle-position` | `top` | ASS 語音字幕位置 `bottom/top` |
 | `--no-ocr-cache` | false | 停用完全相同圖片的 OCR cache |
 | `--strict` | false | 任一樣本或翻譯失敗即中止 |
-| `--stage` | 全流程 | 只跑單一階段 `probe/sample/cache/ocr/track/translate/cleanup/emit` |
+| `--stage` | 全流程 | 只跑單一階段 `probe/sample/cache/ocr/track/asr/translate/cleanup/emit` |
 | `--from-stage` | 頭 | 從指定階段跑到最後(與 `--to-stage` 合用成區間) |
 | `--to-stage` | 尾 | 從頭跑到指定階段 |
 
@@ -241,6 +274,7 @@ work/
     ├── samples/00000001.jpg …
     ├── ocr/00000001.json + .raw.json  # 正規化 + PaddleOCR-VL 原始 JSON
     ├── tracks.json
+    ├── audio_segments.json            # 語音辨識結果(關閉時為空片段)
     ├── translations.json
     ├── events.json
     └── stats.json                     # 耗時、命中率、事件數

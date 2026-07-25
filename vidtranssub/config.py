@@ -49,6 +49,15 @@ class Config:
     ocr_server_model: str | None = None  # 服務端模型名;None = 沿用 paddleocr_model
     ocr_api_key_env: str = "PADDLEOCR_VL_API_KEY"  # 存放 server API key 的環境變數名稱
 
+    # --- 語音辨識(ASR;預設關閉,對現有 OCR 流程零影響) ---
+    audio_transcribe: bool = False  # 總開關;False 時 asr 階段輸出空片段
+    asr_model: str = "large-v3"  # faster-whisper 模型名或本機路徑(VRAM 吃緊可用 medium)
+    asr_device: str = "auto"  # auto/cuda/cpu
+    asr_compute_type: str = "auto"  # auto -> cuda:float16 / cpu:int8
+    asr_language: str | None = None  # None = 自動偵測
+    audio_subtitle_position: str = "top"  # ASS 語音字幕位置 bottom/top(預設頂部,與 OCR 底部區隔)
+    audio_subtitle_color: str = "yellow"  # ASS 語音字幕顏色(顏色名/#RRGGBB/&H..)
+
     # --- 翻譯 ---
     llm_model: str | None = None  # None = 取上游第一個
     llm_cache_url: str = "http://127.0.0.1:8790"
@@ -108,6 +117,17 @@ class Config:
             "reading_order": self.reading_order,
         }
 
+    def asr_params(self) -> dict:
+        """ASR 參數;開關與模型/語言改變時,讓 asr 與下游 translate/cleanup/emit 失效。
+
+        device/compute_type 不影響辨識內容,故不納入 hash。
+        """
+        return {
+            "enabled": self.audio_transcribe,
+            "model": self.asr_model,
+            "language": self.asr_language,
+        }
+
     def translate_params(self, resolved_model: str) -> dict:
         return {
             "model": resolved_model,
@@ -124,4 +144,6 @@ class Config:
             "subtitle_position": self.subtitle_position,
             "bilingual": self.bilingual,
             "target_lang": self.target_lang,
+            "audio_subtitle_position": self.audio_subtitle_position,
+            "audio_subtitle_color": self.audio_subtitle_color,
         }

@@ -16,6 +16,11 @@ ocr = [
     # (transformers/tokenizers/sentencepiece/einops/tiktoken 等),否則初始化會拋 DependencyError。
     "paddlex[ocr]>=3.0",
 ]
+# 語音轉字幕(--audio-transcribe)所需;預設關閉,不用此功能者不必安裝。
+# faster-whisper 底層是 CTranslate2(不需 torch),Windows+NVIDIA 亦可用 GPU。
+asr = [
+    "faster-whisper>=1.0",
+]
 # 真・翻譯快取 proxy(llm_cache_server)所需;client-only 使用者不必安裝。
 server = [
     "fastapi>=0.111",

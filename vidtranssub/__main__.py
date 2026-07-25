@@ -53,6 +53,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--ocr-api-key-env", default="PADDLEOCR_VL_API_KEY",
         help="存放 OCR server API key 的環境變數名稱(server 免金鑰時可忽略)",
     )
+    # --- 語音轉字幕(ASR;預設關閉) ---
+    p.add_argument("--audio-transcribe", action="store_true",
+                   help="啟用語音辨識,把聲音轉成字幕並翻譯(預設關閉;需安裝 vidtranssub[asr])")
+    p.add_argument("--asr-model", default="large-v3",
+                   help="faster-whisper 模型名或本機路徑(VRAM 吃緊可用 medium/small)")
+    p.add_argument("--asr-device", default="auto", help="語音辨識裝置 auto/cuda/cpu")
+    p.add_argument("--asr-compute-type", default="auto",
+                   help="faster-whisper compute_type(auto -> cuda:float16 / cpu:int8)")
+    p.add_argument("--asr-language", default=None, help="語音原文語言(預設自動偵測)")
+    p.add_argument("--audio-subtitle-position", choices=["bottom", "top"], default="top",
+                   help="ASS 語音字幕位置(預設頂部,與 OCR 底部區隔)")
+    p.add_argument("--audio-color", default="yellow",
+                   help="ASS 語音字幕顏色:顏色名(yellow/cyan…)/#RRGGBB/&H..(SRT 不分色)")
     p.add_argument("--llm-model", default=None, help="翻譯模型名稱(預設取上游第一個)")
     p.add_argument("--llm-cache-url", default="http://127.0.0.1:8790",
                    help="外部 OpenAI-compatible LLM cache API base URL")
@@ -64,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ASS 固定位置(SRT 位置由播放器決定)")
     p.add_argument("--no-ocr-cache", action="store_true", help="停用完全相同圖片的 OCR cache")
     p.add_argument("--strict", action="store_true", help="任一樣本或翻譯失敗即中止")
-    stage_choices = ["probe", "sample", "cache", "ocr", "track", "translate", "cleanup", "emit"]
+    stage_choices = ["probe", "sample", "cache", "ocr", "track", "asr", "translate", "cleanup", "emit"]
     p.add_argument(
         "--stage", choices=stage_choices, default=None,
         help="只重跑指定的單一階段(cache 等同 ocr);與 --from-stage/--to-stage 互斥",
@@ -100,6 +113,13 @@ def config_from_args(args: argparse.Namespace) -> Config:
         ocr_server_backend=args.ocr_server_backend,
         ocr_server_model=args.ocr_server_model,
         ocr_api_key_env=args.ocr_api_key_env,
+        audio_transcribe=args.audio_transcribe,
+        asr_model=args.asr_model,
+        asr_device=args.asr_device,
+        asr_compute_type=args.asr_compute_type,
+        asr_language=args.asr_language,
+        audio_subtitle_position=args.audio_subtitle_position,
+        audio_subtitle_color=args.audio_color,
         llm_model=args.llm_model,
         llm_cache_url=args.llm_cache_url,
         text_similarity=args.text_similarity,
@@ -118,6 +138,7 @@ def main() -> None:
         parser.error("--stage 不可與 --from-stage/--to-stage 併用")
 
     from .pipeline import PipelineError, run_pipeline
+    from .asr import ASRError
     from .ffmpeg import FFmpegError
     from .llm_cache_client import TranslationError
     from .paddleocr_provider import PaddleOCRInitError
@@ -133,7 +154,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n已中斷;重跑相同指令即可從斷點續跑。", file=sys.stderr)
         sys.exit(130)
-    except (PipelineError, FFmpegError, TranslationError, PaddleOCRInitError, ValueError) as e:
+    except (PipelineError, FFmpegError, TranslationError, PaddleOCRInitError, ASRError, ValueError) as e:
         print(f"\n錯誤:{e}", file=sys.stderr)
         print("(已保留既有斷點,修正後重跑相同指令即可續跑)", file=sys.stderr)
         sys.exit(1)
