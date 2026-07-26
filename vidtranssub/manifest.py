@@ -83,6 +83,18 @@ class Manifest:
         }
         self.save()
 
+    def migrate_params_hash(self, name: str, old_hash: str, new_hash: str) -> bool:
+        """params hash 的計算方式改版時,就地改寫而不是讓階段過期。
+
+        只在該階段目前記錄的正是 old_hash 時才動作,回傳是否有搬遷。
+        """
+        st = self.data["stages"].get(name)
+        if old_hash == new_hash or not st or st.get("params_hash") != old_hash:
+            return False
+        st["params_hash"] = new_hash
+        self.save()
+        return True
+
     def invalidate(self, name: str) -> None:
         """移除 name 與其所有下游階段。"""
         for stage in [name, *DOWNSTREAM.get(name, [])]:

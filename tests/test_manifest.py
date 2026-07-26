@@ -76,3 +76,30 @@ def test_mark_running_records_params(tmp_path):
     assert not m.stage_done("ocr", h)
     assert m.stage_params_hash("ocr") == h
     assert Manifest(tmp_path / "manifest.json").stage_params_hash("ocr") == h
+
+
+def test_migrate_params_hash_keeps_stage_done(tmp_path):
+    """hash 組成改版時就地換 hash,已完成的階段不得因此重跑。"""
+    m = Manifest(tmp_path / "manifest.json")
+    m.ensure_input("hash-a")
+    old, new, track_h = stable_hash({"v": 1}), stable_hash({"v": 2}), stable_hash({"t": 1})
+    m.mark_done("ocr", old)
+    m.mark_done("track", track_h)
+
+    assert m.migrate_params_hash("ocr", old, new)
+    assert m.stage_done("ocr", new)
+    assert Manifest(tmp_path / "manifest.json").stage_done("ocr", new)
+    # 只換 hash 表示法,結果沒變 -> 下游不該失效
+    assert m.stage_done("track", track_h)
+
+
+def test_migrate_params_hash_noop_when_not_matching(tmp_path):
+    m = Manifest(tmp_path / "manifest.json")
+    m.ensure_input("hash-a")
+    old, new, other = stable_hash({"v": 1}), stable_hash({"v": 2}), stable_hash({"v": 3})
+    m.mark_done("ocr", other)
+
+    assert not m.migrate_params_hash("ocr", old, new)
+    assert m.stage_done("ocr", other)  # 原記錄不動
+    assert not m.migrate_params_hash("ocr", old, old)  # old == new 視為不需搬遷
+    assert not m.migrate_params_hash("track", old, new)  # 沒有該階段紀錄

@@ -297,6 +297,29 @@ def run_pipeline(
     return stats
 
 
+def _migrate_v1_ocr_hash(cfg, fingerprint, ocr_hash, cache_path, manifest, log) -> None:
+    """一次性搬遷:v1 的 OCR params hash 含 ocr_batch_size,現已移除(見 Config.ocr_params)。
+
+    直接讓舊 hash 過期的話,升級後第一次執行就會清空所有 ocr/*.json 並讓整份
+    exact-image cache 對不上 key,等於整部影片重跑。這裡改成就地換 hash。
+    批次大小若與當初那次執行不同就比對不到,屆時的行為與升級前相同(自然失效)。
+    """
+    legacy_hash = stable_hash(cfg.legacy_ocr_params_v1(fingerprint))
+    if legacy_hash == ocr_hash:
+        return
+    if manifest.migrate_params_hash("ocr", legacy_hash, ocr_hash):
+        log("[ocr] manifest 的 OCR params hash 已更新格式(batch_size 不再參與),保留既有結果")
+    if cache_path is None or not cache_path.exists():
+        return
+    cache = OCRCache(cache_path)
+    try:
+        moved = cache.migrate_param_hash(legacy_hash, ocr_hash)
+    finally:
+        cache.close()
+    if moved:
+        log(f"[ocr] 已搬遷 {moved} 筆 exact-image cache 到新 key(batch_size 不再參與)")
+
+
 def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log) -> OCRProvider | None:
     (work / "ocr").mkdir(parents=True, exist_ok=True)
 
@@ -307,6 +330,8 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
     fingerprint = provider.fingerprint() if hasattr(provider, "fingerprint") else {}
     ocr_params = cfg.ocr_params(fingerprint)
     ocr_hash = stable_hash(ocr_params)
+    cache_path = None if cfg.no_ocr_cache else work_root / "videosub_ocr_cache.db"
+    _migrate_v1_ocr_hash(cfg, fingerprint, ocr_hash, cache_path, manifest, log)
 
     if manifest.stage_done("ocr", ocr_hash):
         log("[ocr] 已完成,跳過")
@@ -323,9 +348,7 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
     manifest.invalidate("ocr")
     manifest.mark_running("ocr", ocr_hash)
 
-    cache = None
-    if not cfg.no_ocr_cache:
-        cache = OCRCache(work_root / "videosub_ocr_cache.db")
+    cache = OCRCache(cache_path) if cache_path is not None else None
 
     ocr_stats = stats.setdefault("ocr", {})
     cache_hits = 0
@@ -347,8 +370,9 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
                 continue
             pending.append(s)
         resumed = len(samples) - len(pending)
+        done = resumed  # 已有 OCR 結果的樣本數(續跑起點 + 本次寫出的)
         if resumed:
-            log(f"[ocr] 續跑:{resumed} 張已完成,{len(pending)} 張待處理")
+            log(f"[ocr] 續跑:{resumed}/{len(samples)} 張樣本已完成,{len(pending)} 張待處理")
 
         # 過 cache 並在本次執行內對「完全相同圖片」去重:
         #   - 已解析過的相同圖片(本次執行或 cross-video cache)直接沿用,算 cache 命中。
@@ -358,6 +382,7 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
         ocr_order: list[tuple[str, dict, str | None]] = []  # (dedup_key, rep_sample, cv_key)
 
         def _apply(sample: dict, normalized: dict, raw) -> None:
+            nonlocal done
             dnorm = dict(normalized)
             dnorm["sample_index"] = sample["index"]
             dnorm["timestamp"] = sample["timestamp"]
@@ -366,11 +391,12 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
                 for n, b in enumerate(normalized.get("blocks", []), start=1)
             ]
             _write_ocr(work, sample, dnorm, raw)
+            done += 1
 
-        for idx_in_pending, s in enumerate(pending):
-            img_path = work / s["path"]
-            image_bytes = img_path.read_bytes()
-            sha = s.get("sha256") or sha256_bytes(image_bytes)
+        for s in pending:
+            # sample 階段已把每張的 sha256 寫進 samples.json;沒有才回頭讀檔重算,
+            # 否則每次(續跑)都要把待處理的圖片全部讀過一遍才會開始 OCR。
+            sha = s.get("sha256") or sha256_bytes((work / s["path"]).read_bytes())
             cv_key = ocr_cache_key(sha, ocr_params) if cache else None
             # 停用 cache 時不去重,每張各自 OCR。
             dedup_key = cv_key if cache else f"__nodedup__{s['index']}"
@@ -397,6 +423,10 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
             groups[dedup_key] = [s]
             ocr_order.append((dedup_key, s, cv_key))
 
+        if pending:
+            log(f"[ocr] 本次需辨識 {len(ocr_order)} 張唯一圖片"
+                f"(待處理 {len(pending)} 張,去重與 cache 省下 {len(pending) - len(ocr_order)} 張)")
+
         # 對每個唯一圖片(代表)分批送 OCR,逐批寫入(斷點續跑)。
         bs = max(1, cfg.ocr_batch_size)
         for start in range(0, len(ocr_order), bs):
@@ -412,6 +442,7 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
                 res.reindex(rep["index"], rep["timestamp"])
                 normalized = res.to_dict()
                 _write_ocr(work, rep, normalized, res.raw)
+                done += 1
                 cache_misses += 1  # 唯一圖片實際送 OCR
                 group = groups[dkey]
                 if res.status == "failed":
@@ -429,7 +460,9 @@ def _run_ocr_stage(cfg, work, work_root, samples, provider, manifest, stats, log
                     cache_hits += 1
                     if not res.blocks:
                         no_text += 1
-            log(f"[ocr] 已處理 {min(start + bs, len(ocr_order))}/{len(ocr_order)} 個唯一圖片")
+            # 分母用「全部樣本」,續跑時才看得出整體進度;括號內是本次實際送 OCR 的張數。
+            log(f"[ocr] 進度 {done}/{len(samples)} 張樣本"
+                f"(本次已辨識 {min(start + bs, len(ocr_order))}/{len(ocr_order)} 張唯一圖片)")
     finally:
         if cache is not None:
             cache.close()

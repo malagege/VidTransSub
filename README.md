@@ -261,7 +261,7 @@ probe → sample → ocr(含 exact-image cache)→ track → asr → translate �
 | `--work-dir` | `./work` | 工作目錄與跨影片 OCR cache |
 | `--target-lang` | `zh-TW` | 翻譯目標語言 |
 | `--source-lang` | auto | 原文語言 |
-| `--ocr-batch-size` | `8` | 每批送入 PaddleOCR-VL 的 sample 數 |
+| `--ocr-batch-size` | `8` | 每批送入 PaddleOCR-VL 的 sample 數(改了不會讓已完成的 OCR 失效) |
 | `--ocr-confidence` | 停用 | provider 有分數時才啟用的最低門檻 |
 | `--ocr-server-url` | in-process | 指定 PaddleOCR genai_server base URL(如 `http://GPU_HOST:8118/v1`)後,VLM 辨識走遠端 server |
 | `--ocr-server-backend` | `vllm-server` | server 後端:`vllm/sglang/fastdeploy/mlx-vlm/llama-cpp -server` |
@@ -305,6 +305,17 @@ work/
 
 參數變更只使必要階段失效:改 interval → sample 之後全部;改 OCR 參數 → OCR 之後;
 改翻譯模型/語言/prompt 版本 → translate 之後;改字幕樣式/位置 → 只重跑 emit。
+
+`--ocr-batch-size` 例外:它只決定一次送幾張進 OCR,不影響辨識結果,所以改了**不會**
+讓已完成的 OCR 結果或 cache 失效,可以安心中途調整(例如遇到 OOM 就調小再續跑)。
+
+續跑時 OCR 進度以全部樣本數為分母,不會因為重新執行而看起來像從頭跑:
+
+```text
+[ocr] 續跑:8682/17450 張樣本已完成,8768 張待處理
+[ocr] 本次需辨識 8759 張唯一圖片(待處理 8768 張,去重與 cache 省下 9 張)
+[ocr] 進度 8690/17450 張樣本(本次已辨識 8/8759 張唯一圖片)
+```
 
 ## 測試
 

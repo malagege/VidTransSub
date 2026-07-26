@@ -96,18 +96,25 @@ class Config:
         """OCR 參數;provider_fingerprint 是 provider 啟動後解析出的實際版本/模型/選項。
 
         exact-image cache key 也用這份參數,確保 PaddleOCR 版本或選項改變時 cache 自然失效。
+
+        刻意不含 ocr_batch_size:它只決定一次送幾張進 pipeline,不影響任何一張的辨識
+        結果。若把它算進 hash,調整批次大小(例如避開 OOM)就會清空已完成的 ocr/*.json
+        並讓整份 exact-image cache 失效。
         """
         params = {
             "provider": self.ocr_provider,
             "model": self.paddleocr_model,
             "engine": self.paddleocr_engine,
             "device": self.ocr_device,
-            "batch_size": self.ocr_batch_size,
             "confidence": self.ocr_confidence,
         }
         if provider_fingerprint:
             params["provider_fingerprint"] = provider_fingerprint
         return params
+
+    def legacy_ocr_params_v1(self, provider_fingerprint: dict | None = None) -> dict:
+        """v1 的 OCR 參數(曾把 batch_size 算進 hash),僅供既有 manifest/cache 搬遷比對。"""
+        return {**self.ocr_params(provider_fingerprint), "batch_size": self.ocr_batch_size}
 
     def track_params(self) -> dict:
         return {

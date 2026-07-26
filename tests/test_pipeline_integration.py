@@ -152,6 +152,102 @@ def test_resume_skips_completed_stages(tmp_path, test_video, llm_url):
     assert (test_video.parent / "clip.zh-TW.srt").exists()
 
 
+def test_batch_size_change_does_not_rerun_ocr(tmp_path, test_video, llm_url):
+    """batch size 只決定一次送幾張,改了不得清空既有 ocr/*.json 或讓 cache 失效。"""
+    import dataclasses
+
+    cfg = _cfg(tmp_path, llm_url)
+    run_pipeline(cfg, test_video, provider=FakeOCRProvider(scene_blocks), to_stage="ocr")
+
+    work = Path(cfg.work_dir).resolve() / "clip-videosub"
+    before = {p.name: p.read_text(encoding="utf-8") for p in (work / "ocr").glob("*.json")}
+    assert before
+
+    provider2 = FakeOCRProvider(scene_blocks)
+    smaller_batch = dataclasses.replace(cfg, ocr_batch_size=1)
+    run_pipeline(smaller_batch, test_video, provider=provider2, to_stage="ocr")
+
+    assert provider2.calls == 0  # 已完成,不得重新辨識
+    after = {p.name: p.read_text(encoding="utf-8") for p in (work / "ocr").glob("*.json")}
+    assert after == before
+
+
+def test_v1_ocr_hash_is_migrated_not_invalidated(tmp_path, test_video, llm_url, capsys):
+    """升級後第一次執行:v1(hash 含 batch_size)的 manifest/cache 須就地搬遷,不重跑。"""
+    from vidtranssub.config import stable_hash
+    from vidtranssub.manifest import Manifest
+    from vidtranssub.ocr_cache import OCRCache
+
+    cfg = _cfg(tmp_path, llm_url)
+    provider = FakeOCRProvider(scene_blocks)
+    run_pipeline(cfg, test_video, provider=provider, to_stage="ocr")
+    assert provider.calls > 0
+
+    fingerprint = provider.fingerprint()
+    new_hash = stable_hash(cfg.ocr_params(fingerprint))
+    legacy_hash = stable_hash(cfg.legacy_ocr_params_v1(fingerprint))
+    assert legacy_hash != new_hash
+
+    # 把 manifest 與 cache 退回 v1 的樣子(key/hash 都含 batch_size)。
+    work = Path(cfg.work_dir).resolve() / "clip-videosub"
+    manifest = Manifest(work / "manifest.json")
+    assert manifest.migrate_params_hash("ocr", new_hash, legacy_hash)
+    db_path = Path(cfg.work_dir).resolve() / "videosub_ocr_cache.db"
+    cache = OCRCache(db_path)
+    assert cache.migrate_param_hash(new_hash, legacy_hash) > 0
+    cache.close()
+
+    capsys.readouterr()
+    provider2 = FakeOCRProvider(scene_blocks)
+    run_pipeline(cfg, test_video, provider=provider2, to_stage="ocr")
+
+    assert provider2.calls == 0  # 舊結果被認得,不重跑
+    assert "清除" not in capsys.readouterr().out  # 也沒觸發「參數已變更」清檔
+    assert Manifest(work / "manifest.json").stage_done("ocr", new_hash)
+    cache = OCRCache(db_path)
+    entries = cache.db.execute(
+        "SELECT COUNT(*) FROM ocr_cache WHERE substr(key, instr(key, ':') + 1) = ?",
+        (new_hash,),
+    ).fetchone()[0]
+    cache.close()
+    assert entries > 0  # cache 也搬到新 key,不是變成孤兒
+
+
+def test_resume_progress_log_uses_total_samples(tmp_path, test_video, llm_url, capsys):
+    """續跑時進度分母須是全部樣本數,否則看起來像整部重跑。"""
+    cfg = _cfg(tmp_path, llm_url)
+    run_pipeline(cfg, test_video, provider=FakeOCRProvider(scene_blocks), to_stage="ocr")
+
+    # 砍掉後半段 OCR 結果並把階段退回 running,模擬中途被 Ctrl+C。
+    import dataclasses
+
+    work = Path(cfg.work_dir).resolve() / "clip-videosub"
+    results = sorted(
+        p for p in (work / "ocr").glob("*.json") if not p.name.endswith(".raw.json")
+    )
+    assert len(results) >= 4
+    for p in results[len(results) // 2:]:
+        p.unlink()
+    manifest_path = work / "manifest.json"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["stages"]["ocr"]["status"] = "running"
+    manifest_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    # 關掉 cache,讓剩下的都真的走一次 OCR,進度行才可觀測。
+    resumed_cfg = dataclasses.replace(cfg, no_ocr_cache=True)
+    capsys.readouterr()
+    stats = run_pipeline(
+        resumed_cfg, test_video, provider=FakeOCRProvider(scene_blocks), to_stage="ocr"
+    )
+    out = capsys.readouterr().out
+    total = stats["sample_count"]
+
+    assert f"/{total} 張樣本已完成" in out  # 續跑行帶總數
+    progress = [ln for ln in out.splitlines() if ln.startswith("[ocr] 進度 ")]
+    assert progress
+    assert progress[-1].startswith(f"[ocr] 進度 {total}/{total} 張樣本")  # 收尾是整體完成
+
+
 def test_two_phase_split_avoids_ocr_provider(tmp_path, test_video, llm_url):
     """--to-stage ocr 後 --from-stage track:第二段不得載入 OCR provider(VRAM 分離)。"""
     cfg = _cfg(tmp_path, llm_url)

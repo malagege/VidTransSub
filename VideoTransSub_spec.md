@@ -376,7 +376,9 @@ LLM cache DB 由外部 LLM cache API 服務管理，不屬於 VideoTransSub 工�
 | LLM model、語言、prompt version | translate、cleanup、emit |
 | SRT/ASS 樣式、subtitle position | emit |
 
-每個 sample 完成 OCR 後立即原子寫入 JSON，Ctrl+C 後可從未完成 sample 繼續。
+`--ocr-batch-size` 只決定一次送幾張進 pipeline，不影響任何一張的辨識結果，因此**不參與** OCR params hash 也不進 cache key；調整批次大小（例如避開 OOM）不會清掉已完成的 `ocr/*.json`，也不會讓 exact-image cache 失效。
+
+每個 sample 完成 OCR 後立即原子寫入 JSON，Ctrl+C 後可從未完成 sample 繼續。續跑時進度以「全部樣本數」為分母（`[ocr] 進度 8690/17450 張樣本`），括號內另附本次實際送 OCR 的唯一圖片數，避免看起來像整部重跑。
 
 ## 9. CLI 設計
 
@@ -412,7 +414,7 @@ vidtranssub input.mp4 --stage ocr
 | `--paddleocr-model` | `PaddleOCR-VL` | 模型名稱或本機路徑；resolved version 寫入 manifest |
 | `--paddleocr-engine` | 套件預設 | PaddleOCR-VL inference engine |
 | `--ocr-device` | `auto` | PaddleOCR-VL 執行裝置 |
-| `--ocr-batch-size` | `8` | 每批送入 PaddleOCR-VL 的 sample 數 |
+| `--ocr-batch-size` | `8` | 每批送入 PaddleOCR-VL 的 sample 數；不參與 params hash（見 §8） |
 | `--ocr-confidence` | disabled | provider 有分數時才啟用的最低門檻 |
 | `--llm-model` | 上游第一個模型 | 翻譯模型名稱 |
 | `--llm-cache-url` | `http://127.0.0.1:8790` | 外部 OpenAI-compatible LLM cache API base URL |

@@ -87,6 +87,30 @@ class OCRCache:
             )
             self.db.commit()
 
+    def migrate_param_hash(self, old_hash: str, new_hash: str) -> int:
+        """把 key 尾端的參數 hash 由 old_hash 改寫成 new_hash,回傳搬遷筆數。
+
+        參數 hash 的「組成」改版(而非參數真的變了)時使用,讓既有 cache 不必重跑。
+        key 格式為 `<image_sha256>:<params_hash>`,只換冒號之後的部分;若新 key 已存在
+        則保留既有那筆並丟棄舊的。
+        """
+        if old_hash == new_hash:
+            return 0
+        with self._lock:
+            cur = self.db.execute(
+                "UPDATE OR IGNORE ocr_cache"
+                " SET key = substr(key, 1, instr(key, ':')) || ?"
+                " WHERE substr(key, instr(key, ':') + 1) = ?",
+                (new_hash, old_hash),
+            )
+            moved = cur.rowcount
+            self.db.execute(
+                "DELETE FROM ocr_cache WHERE substr(key, instr(key, ':') + 1) = ?",
+                (old_hash,),
+            )
+            self.db.commit()
+        return moved
+
     def stats(self) -> dict:
         with self._lock:
             (entries,) = self.db.execute("SELECT COUNT(*) FROM ocr_cache").fetchone()
